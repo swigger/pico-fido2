@@ -1,0 +1,21 @@
+# Relay-only networking still initializes lazily; local mode never starts Wi-Fi.
+CONFIG_PM_ENABLE=y
+# USB remains active: do not enable automatic light sleep.
+# CONFIG_FREERTOS_USE_TICKLESS_IDLE is not set
+# CONFIG_MBEDTLS_TLS_DISABLED is not set
+CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
+CONFIG_MBEDTLS_HAVE_TIME=y
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_ELLIPTIC_CURVE=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA=y
+CONFIG_MBEDTLS_GCM_C=y
+CONFIG_ESP_WIFI_ENABLED=y
+# Use the supported supplicant crypto backend rather than its limited internal
+# implementation. The TLS and FIDO code already link Mbed TLS.
+CONFIG_ESP_WIFI_MBEDTLS_CRYPTO=y
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
+# The storage offsets stay unchanged. Relay TLS/Wi-Fi uses the previously empty
+# space between the 1 MiB application and the FIDO partition at 0x200000.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="config/esp32/relay-partitions.csv"

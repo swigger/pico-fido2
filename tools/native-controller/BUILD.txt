@@ -1,0 +1,208 @@
+Pico FIDO2 native controller: build, test and command reference
+==============================================================
+
+Two executables are built from tools/native-controller:
+  Esp32KeyConfirm   Qt Widgets GUI. Also runs every CLI command below.
+                    On macOS the bundle is named "Pico FIDO Controller.app".
+  pico-fido-cli     No Qt. All commands except the GUI ones
+                    (no arguments, --accounts, --safe-end, --serve).
+Both share ControllerCore: portable C++17, Mbed TLS 3.6.7 and hidapi 0.15.0
+(downloaded by CMake FetchContent, pinned by SHA-256; set
+FETCHCONTENT_SOURCE_DIR_RELAY_MBEDTLS / _RELAY_HIDAPI for offline builds).
+Relay design and operation: docs/relay.md.
+
+Prerequisites
+-------------
+Windows 10/11:
+  Visual Studio 2022 or newer (Desktop C++), CMake >= 3.21,
+  Qt 6 or Qt 5.15 for MSVC x64 (pass its prefix via CMAKE_PREFIX_PATH).
+  Runtime: dynamic MSVC CRT and the Qt DLLs (deploy with windeployqt).
+Linux (Debian/Ubuntu package names):
+  build-essential cmake pkg-config qt6-base-dev (or qtbase5-dev)
+  libsecret-1-dev libudev-dev
+  libudev is needed by hidapi's hidraw backend (libusb is not used).
+  Qt DBus (shipped with the Qt base dev package) is optional; when found the
+  GUI reacts to screen-saver/logind session locks.
+  Runtime: an unlocked Secret Service (GNOME Keyring, KWallet) and hidraw
+  permission for the key, e.g. /etc/udev/rules.d/70-pico-fido2.rules:
+    KERNEL=="hidraw*", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="619b", TAG+="uaccess"
+  then: sudo udevadm control --reload && sudo udevadm trigger, and replug.
+macOS: Xcode command line tools, CMake, Qt 6 or 5.15 (e.g. Homebrew qtbase,
+  CMAKE_PREFIX_PATH=$(brew --prefix qtbase)). Uses Keychain and IOKit HID.
+  Login-keychain access is bound to the code signature: pass
+  -DPICO_MACOS_CODESIGN_IDENTITY="<codesign identity>" so every executable
+  (tests included) shares one identity; ad-hoc builds stall on Keychain prompts.
+
+Configure, build, test
+----------------------
+Windows (PowerShell, repository root):
+  cmake -S tools/native-controller -B build/native-controller -G "Visual Studio 17 2022" -A x64 `
+        -DCMAKE_PREFIX_PATH=C:/Qt/6.8.0/msvc2022_64
+  cmake --build build/native-controller --config Release
+  ctest --test-dir build/native-controller -C Release --output-on-failure
+  C:/Qt/6.8.0/msvc2022_64/bin/windeployqt.exe build/native-controller/Release/Esp32KeyConfirm.exe
+macOS bundle (Qt frameworks, PicoFidoStorage, licenses, one signature):
+  tools/native-controller/package-macos.sh build/native-controller "<codesign identity>"
+  Re-run it after every rebuild: a stale bundle signature also blocks Keychain.
+Linux / macOS:
+  cmake -S tools/native-controller -B build/native-controller -DCMAKE_BUILD_TYPE=Release
+  cmake --build build/native-controller -j
+  ctest --test-dir build/native-controller --output-on-failure
+Options:
+  -DPICO_CONTROLLER_GUI=OFF   CLI-only build; Qt is not needed.
+  -DBUILD_TESTING=OFF         skip test targets.
+  -DENABLE_RELAY_DIAGNOSTICS=ON  development-only --device-diagnostics command;
+      also requires diagnostic firmware. Default OFF; omit from releases.
+  -DRELAY_TEST_PYTHON=<absolute path to python>   adds the interoperability
+      tests; that interpreter needs tools/requirements-test.txt
+      (python -m pip install -r tools/requirements-test.txt, preferably in a venv).
+Distribute THIRD_PARTY.txt and the copied MBEDTLS-*/HIDAPI-LICENSE.txt files
+with the GUI. When replacing a running executable, rename the old file first;
+do not kill the user's running instance.
+On Linux the tests use the real OS data protection and therefore need an
+unlocked Secret Service (desktop session, or dbus-run-session with an unlocked
+gnome-keyring-daemon). Without one they fail closed.
+
+Tests (ctest names)
+-------------------
+  credential-management       USB credential-management client: ECDH/AES/HMAC vectors,
+                              CBOR, pagination, wrong PIN, cancellation (CredentialTests)
+  controller-crypto           pico-fido-cli --self-test: P-256 roundtrip/signing,
+                              public key validation, SHA-256, OS data protection
+  device-names                local device-name limits, persistence, corruption
+  relay-configuration-codec   PF2RCF03 encoding, ten profiles, bounds, mutation
+  relay-setup-authorization   signed provisioning state machine, BOOT timing, replay
+  relay-hid-control           controller upload/read against the shared firmware HID code
+  relay-settings-storage      encrypted per-device drafts and revocation markers
+  relay-password-token        PF2PW1 sealing, device binding, tamper and plaintext compat
+  relay-transport-codec       signed request challenge/context, frame codecs
+                              v3/v4 negotiation binding and authenticated public hints
+  relay-authenticator         ES256 registration/assertion, approval scope, vault lock
+  relay-backup-storage        PF2BAK01 export/restore, wrong password, no overwrite
+  relay-local-clear           backup-verified local clear, failure/cancel, vault switching,
+                              interrupted-clear recovery and unrelated-file preservation
+
+Optimistic discovery regression coverage:
+  RelayFirmwareTests: 1,000 offline GetInfo calls per cache scenario, stale/corrupt
+      cache/config changes, monotonic hints, local selection without network IO.
+  RelayEspNetworkTests: real TLS, authenticated hint validation, background
+      prefetch preempted by a foreground request, cancellation cleanup.
+  RelayCloudTests: cloud reads delayed beyond Windows' discovery window, canceled
+      acquisition, simultaneous unlocked clients, commits during approval,
+      counter continuity, replaced accounts and PIN changes during approval.
+  tools/relay-storage: TestTransactionWaitAndCancel uses embedded etcd;
+      TestNativeCloudVault uses the real native/helper/etcd/WebDAV chain when
+      PICO_FIDO_NATIVE_CLOUD_TEST points to RelayCloudTests.exe.
+  relay-cloud-native          storage pipe protocol, ownership, rollback guard, faults
+  relay-cloud-remembered-code  opt-in protected recovery codes, startup reuse,
+                              invalid-code fallback, cancellation, network failures, detach
+  relay-network               loopback TCP/TLS service: trust failures, PIN/UV,
+                              denial, cancellation, revocation, exact query,
+                              GetInfo before slow idle cloud maintenance
+  relay-identity              per-start TLS certificate issued by the controller key
+  safe-end-session            manager session ownership, locking, cancellation
+  esp-power-safe-random       firmware CTR-DRBG/random source (host build)
+  relay-esp-network           real firmware Wi-Fi/TLS worker against the service
+                              (Windows only: lwIP shim maps to Winsock)
+  relay-dispatch-isolation    firmware HID/APDU/CBOR dispatch gates in relay mode
+  relay-firmware-storage      firmware NVS config, readback faults, BOOT, LED
+  esp-existing-storage-keys   existing eFuse key handling with provisioning off
+With RELAY_TEST_PYTHON:
+  relay-pin-interop           python-fido2 PIN 1/2, assertion preflight and Apple attestation
+  relay-backup-interop        independent AES-GCM/PBKDF2 decryption of backups
+  relay-backup-console        no-echo password entry, Ctrl+C (Windows only)
+Hardware checks (manual, real device, fictional credentials only):
+  python tools/check_native_controller.py   registration/login with controller approval
+  (Windows: raw FIDO HID needs an Administrator terminal.)
+
+Storage helper (cloud vaults only)
+----------------------------------
+PicoFidoStorage is a static Go program (rclone 1.75.2, etcd client 3.6.16) and
+must sit beside the controller executable (on macOS inside the .app's
+Contents/MacOS). Requires Go (see tools/relay-storage/go.mod); the result needs
+no Go runtime. Both scripts verify module checksums and package license texts.
+  Windows: tools/relay-storage/build.ps1 -OutputDirectory build/native-controller/Release
+  Linux/macOS: tools/relay-storage/build.sh build/native-controller
+Tests:
+  cd tools/relay-storage && go test -count=1 -timeout=210s ./...
+  Windows cross-language test against the native code:
+    $env:PICO_FIDO_NATIVE_CLOUD_TEST = (Resolve-Path build/native-controller/Release/RelayCloudTests.exe).Path
+    then run go test as above.
+Only synthetic profiles and loopback etcd/WebDAV servers are used.
+
+Firmware (ESP32-S3, relay-capable)
+----------------------------------
+Inside an ESP-IDF 5.5.6 environment, from the repository root:
+  idf.py -B build/relay-idf55 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build/relay-idf55/sdkconfig \
+         -DENABLE_REMOTE_PRESENCE=ON -DENABLE_OTP_APP=OFF -DENABLE_OATH_APP=OFF \
+         -DENABLE_ESP_EFUSE_KEYS=OFF -DLED_ACTIVITY_ONLY=ON build
+ENABLE_REMOTE_PRESENCE=ON adds sdkconfig.relay.defaults, which selects the
+partition table config/esp32/relay-partitions.csv:
+  nvs 0x9000 (0x6000), phy_init 0xf000, factory app 0x10000 (0x1f0000),
+  FIDO part0 0x200000 (1 MiB).
+Data partitions keep their old offsets; only the app partition grew. The relay
+image is larger than 1 MiB, so a device still using the old 1 MiB app table
+needs the new partition table at 0x8000 before the app at 0x10000. Never erase
+NVS (pairings, relay config) or part0 (credentials) on a populated device; full
+erase and merged factory images are for blank devices only.
+ENABLE_ESP_EFUSE_KEYS=OFF disables new eFuse burns but still uses existing
+readable KEY3/KEY4 application keys; an unreadable or incompatible key stops
+startup before storage access. Never change a device's key source as part of
+an update.
+Review an update of a populated device (read-only, does not touch the device):
+  python tools/check_relay_update.py --build-dir build/relay-idf55 \
+         --baseline-partitions <partition table previously read from that device>
+  python tools/test_relay_update.py   (offline regressions of the checker)
+Download mode: hold BOOT, press RESET; after flashing release BOOT and replug.
+
+Data locations
+--------------
+Per-user directory PicoFido2Remote under %LOCALAPPDATA% (Windows),
+~/Library/Application Support (macOS), $XDG_DATA_HOME or ~/.local/share (Linux).
+Secret files end in .dpapi (Windows DPAPI) or .sealed (AES-256-GCM, key in the
+OS keyring). File list: docs/relay.md, "Local data".
+
+CLI reference
+-------------
+Passwords are read only from the controlling terminal with echo off; PINs and
+passwords are never accepted as arguments. "--device SERIAL" (16 hex digits)
+selects a key when several are connected; USB commands otherwise need exactly
+one. Exit status: 0 success (or "yes"), 2 "no" for queries, 1 error.
+Controller and local mode:
+  --self-test                 crypto and OS data-protection self-test
+  --generate                  create the controller key if absent (no pairing)
+  --list-devices              connected serials and local names
+  --status                    pairing state and trusted key IDs
+  --pair                      start pairing; then release, hold BOOT 1 s, release;
+                              also saves the device public key for relay trust
+  --approve --rp RP_ID        approve one pending local-mode request for RP_ID
+  --rename NAME               local display name (max 32 UTF-8 bytes; "" clears)
+  --relay-status              device mode, profile counts and setup state
+  --device-reboot             signed reboot using this computer's paired key
+  --relay-query RP USER       exact query through relay hardware (Windows: elevated)
+Existing-key firmware updates use tools/update-esp32-app.ps1 with a release package,
+-Port COMn and -Python (ESP-IDF Python). It checks the partition table and writes
+only the application; use the factory image only for a new device.
+Safe-end vault (no USB needed; stop the service first):
+  --vault-init                create the local vault
+  --vault-list                list RP / user / display name
+  --vault-query RP USER       exact local lookup
+  --vault-reset-pin SERIAL    clear one device's relay PIN and retries
+  --vault-export PATH         encrypted .pf2bak backup (new file only)
+  --vault-import PATH         restore into an uninitialized local vault
+Storage selection:
+  --storage-status            local / cloud / pending and namespace
+  --storage-new-id            print a fresh namespace
+  --storage-init-cloud NS     create and select a new cloud vault (prints a
+                              generated recovery code once; type it back)
+  --storage-open-cloud NS     select an existing cloud vault
+  --storage-migrate-cloud     move the local vault to its cloud profile
+  --storage-resume            finish this computer's interrupted init/migration
+Paired relay devices:
+  --relay-enrollments         paired relay devices and device key fingerprints
+  --relay-revoke SERIAL       forget a lost device's public key on this safe end
+GUI only (Esp32KeyConfirm):
+  (no arguments)              main window
+  --accounts                  open the "网站与账号" tab
+  --safe-end                  safe-end manager
+  --serve [ADDRESS PORT]      relay service with approval dialogs (default 0.0.0.0 8443)

@@ -4,9 +4,9 @@
 	branch = main
 [submodule "pico-openpgp"]
 	path = pico-openpgp
-	url = ../pico-openpgp.git
+	url = https://github.com/librekeys/pico-openpgp.git
 	branch = main
 [submodule "pico-keys-sdk"]
 	path = pico-keys-sdk
-	url = ../pico-keys-sdk.git
+	url = https://github.com/swigger/pico-keys-sdk.git
 	branch = main

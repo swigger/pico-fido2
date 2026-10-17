@@ -1,0 +1,14 @@
+The native controller statically links Mbed TLS 3.6.7 from its official release:
+https://github.com/Mbed-TLS/mbedtls/releases/tag/mbedtls-3.6.7
+Archive SHA-256: a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+
+Mbed TLS is used under its Apache-2.0 license option. The complete upstream
+license is copied beside the executable as MBEDTLS-LICENSE.txt. Its bundled
+Project Everest code (copyright INRIA and Microsoft Corporation, 2016-2018) is
+Apache-2.0; its bundled p256-m code (Manuel Pegourie-Gonnard) is used under the
+Apache-2.0 option. Their upstream README notices are copied alongside that license.
+Source and original notices are retained in the verified CMake dependency tree.
+
+Windows networking, CNG and DPAPI are operating-system APIs. There is no Python,
+OpenSSL DLL, Qt or separate TLS runtime dependency in the delivered executable.
+The main project retains its existing license; see the repository LICENSE.

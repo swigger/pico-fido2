@@ -1,0 +1,21 @@
+#include <windows.h>
+IDI_ICON1 ICON "icon/app.ico"
+1 VERSIONINFO
+FILEVERSION 2,1,0,0
+PRODUCTVERSION 2,1,0,0
+FILETYPE VFT_APP
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904B0"
+  BEGIN
+   VALUE "FileDescription", "ESP32 Security Key Controller (native C++)\0"
+   VALUE "ProductName", "ESP32 Key Confirm\0"
+   VALUE "FileVersion", "2.1.0\0"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x409, 1200
+ END
+END

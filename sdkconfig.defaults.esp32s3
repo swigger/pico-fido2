@@ -1,0 +1,11 @@
+# Use the flash mode tested on this ESP32-S3 board.
+# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+# The native USB PHY belongs to TinyUSB FIDO, not the JTAG console.
+CONFIG_ESP_CONSOLE_NONE=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# Crypto and initialization need more than the ESP-IDF default main stack.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# Never persist cryptographic runtime state in a crash dump.
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y

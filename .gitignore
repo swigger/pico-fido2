@@ -1,5 +1,6 @@
 # Build directories
 build/
+build-*/
 build_release/
 
 # CMake
@@ -36,9 +37,38 @@ release/
 
 # Compile commands
 compile_commands.json
+CMakeUserPresets.json
 
 # ESP-IDF
 sdkconfig
 sdkconfig.old
 managed_components/
-dependencies.lock
+
+# Local hardware-check environment
+.venv/
+__pycache__/
+.private/
+dist/
+
+# Native Windows build and editor outputs
+.vs/
+out/
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.tlog
+*.suo
+*.user
+
+# Local diagnostics and controller key exports
+*.log
+*.tmp
+*.dmp
+*.dpapi
+*.dpapi.*
+*.pf2key
+/待手动删除.txt

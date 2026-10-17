@@ -6,6 +6,66 @@ This is a fork of the last community edition version of the pico-fido2 firmware,
 
 ---
 
+## ESP32-S3 with a native controller and relay mode
+
+The optional `ENABLE_REMOTE_PRESENCE` build adds a separate USB HID interface for
+the native controller in `tools/native-controller` (Qt GUI `Esp32KeyConfirm` and
+`pico-fido-cli`; Windows and Linux, macOS prepared but untested). Each computer
+generates its own P-256 key; adding or removing a trusted key needs the physical
+BOOT button, and up to four controller keys are stored on the device. A paired
+controller can confirm local registrations and logins instead of a BOOT press.
+The same BOOT pairing also gives the controller the device's own P-256 public key
+(generated on the device, never exported); in relay mode the device signs every
+request with it and the safe end accepts only devices it has paired. In the
+other direction the safe end's TLS certificate is issued per service start by its
+controller key, which the device already trusts: there is no CA, host-name or
+certificate lifetime to manage.
+
+The key can also be switched, over USB with a signed configuration and BOOT
+confirmation, into relay mode (`new_design.md`). In relay mode the hardware keeps
+its local credentials dormant and forwards CTAP requests over Wi-Fi/TLS (up to ten
+Wi-Fi + endpoint profiles) to a "safe end": the controller on a trusted computer,
+which stores the private keys in an encrypted local or cloud vault (OneDrive,
+Google Drive or WebDAV, coordinated by etcd) and asks for explicit approval of
+each registration and login. Relay mode never falls back to local credentials and
+never enumerates accounts through the hardware; only an approved exact
+site/account query is possible. Lost relay devices can be revoked at the safe end.
+
+- [Relay reference](docs/relay.md): architecture, modes, provisioning, approval
+  and PIN behaviour, backup, cloud storage, security notes and known limits.
+- [Build, test and CLI reference](tools/native-controller/BUILD.txt), including the
+  relay firmware build and the partition-table change for populated devices.
+- [User guide (Chinese)](ESP32-FIDO2使用说明.txt).
+
+The **网站与账号** tab lists the discoverable credentials on a connected key after
+verifying its FIDO PIN (on Windows via an elevated instance the GUI offers to open).
+On ESP32, `LED_ACTIVITY_ONLY` defaults to on and eFuse provisioning to off
+(`ENABLE_ESP_EFUSE_KEYS=OFF`); preserve the NVS and credential partitions when updating.
+
+### Apple Account compatibility
+
+Enrollment for the exact RP ID `apple.com` returns packed attestation with the
+device certificate, using the same mechanism as the Microsoft RP profile. The
+generated certificate includes the WebAuthn-required `Authenticator Attestation`
+organizational unit and non-CA constraints. Legacy locally generated certificates
+are upgraded only when their self-signature and public key match; the device key,
+PIN and account credentials are retained. Device attestation is hashed with ES256
+independently of the new credential's curve.
+
+Website registration and login from an iPhone over USB-C have worked. Apple
+Account enrollment has not been fully tested, and this self-made device is not
+FIDO certified, while [Apple's requirements](https://support.apple.com/en-us/102637)
+call for FIDO-certified security keys. See also the
+[upstream report](https://github.com/polhenarejos/pico-fido/issues/238).
+
+`python tools/check_iphone_compat.py` (host test dependencies from
+`tools/requirements-test.txt`) verifies canonical CBOR, certificate structure,
+attestation and subsequent assertion signatures for ES256, ES384 and ES512 using
+nonresident test credentials. On Windows run it from an Administrator terminal.
+Add `--controller <path to pico-fido-cli>` to approve with an already paired
+controller; otherwise press BOOT for each request. It prompts for an existing PIN
+and never sets or changes one.
+
 ## Supported platforms
 
 | | RP2040 | RP2350 | ESP32-S2 | ESP32-S3 |

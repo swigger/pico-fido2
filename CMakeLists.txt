@@ -21,7 +21,24 @@ set(USB_VID 0x1D50)
 set(USB_PID 0x619B)
 
 if(ESP_PLATFORM)
-    set(DEBUG_APDU 1)
+    set(DEBUG_APDU 0)
+    option(LED_ACTIVITY_ONLY "Keep the status LED dark when idle" ON)
+    if(LED_ACTIVITY_ONLY)
+        add_compile_definitions(LED_ACTIVITY_ONLY=1)
+    endif()
+    option(ENABLE_REMOTE_PRESENCE "Allow signed confirmation from a paired local controller" OFF)
+    option(ENABLE_RELAY_DIAGNOSTICS "Development-only USB/relay RAM diagnostics" OFF)
+    if(ENABLE_RELAY_DIAGNOSTICS)
+        add_compile_definitions(ENABLE_RELAY_DIAGNOSTICS=1)
+    endif()
+    if(ENABLE_REMOTE_PRESENCE)
+        add_compile_definitions(ENABLE_REMOTE_PRESENCE=1)
+        set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults;${CMAKE_CURRENT_LIST_DIR}/sdkconfig.relay.defaults")
+    endif()
+    option(ENABLE_ESP_EFUSE_KEYS "Irreversibly provision ESP32 eFuse key blocks on first boot" OFF)
+    if(NOT ENABLE_ESP_EFUSE_KEYS)
+        add_compile_definitions(PICO_NO_EFUSE_KEYS=1)
+    endif()
     set(EXTRA_COMPONENT_DIRS
         src/fido2
         pico-keys-sdk/src
@@ -57,7 +74,6 @@ if(ENABLE_OATH_APP)
     add_definitions(-DENABLE_OATH_APP=1)
     message(STATUS "OATH Application: \t\t enabled")
 else()
-    add_definitions(-DENABLE_OATH_APP=0)
     message(STATUS "OATH Application: \t\t disabled")
 endif()
 
@@ -66,7 +82,6 @@ if(ENABLE_OTP_APP)
     add_definitions(-DENABLE_OTP_APP=1)
     message(STATUS "OTP Application: \t\t enabled")
 else()
-    add_definitions(-DENABLE_OTP_APP=0)
     message(STATUS "OTP Application: \t\t disabled")
 endif()
 
@@ -85,6 +100,15 @@ if(NOT ESP_PLATFORM)
 endif()
 
 list(APPEND SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/shared/relay_config.c
+    ${CMAKE_CURRENT_LIST_DIR}/shared/relay_setup.c
+    ${CMAKE_CURRENT_LIST_DIR}/shared/relay_hid.c
+    ${CMAKE_CURRENT_LIST_DIR}/shared/device_restart.c
+    ${CMAKE_CURRENT_LIST_DIR}/shared/relay_transport.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/fido2/relay_firmware.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/fido2/relay_diagnostics.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/fido2/relay_password.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/fido2/relay_network.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fido2/files.c
     ${CMAKE_CURRENT_LIST_DIR}/pico-fido/src/fido/fido.c
     ${CMAKE_CURRENT_LIST_DIR}/pico-fido/src/fido/kek.c
@@ -140,8 +164,20 @@ endif()
 SET_VERSION(ver_major ver_minor "${CMAKE_CURRENT_LIST_DIR}/pico-fido/src/fido/version.h" 1)
 if(ESP_PLATFORM)
     project(pico_fido2)
+    # One file for the controller's 刷写新设备: bootloader, partition table and
+    # app merged at their flash offsets, written from 0x0.
+    if(IDF_TARGET STREQUAL "esp32s3")
+        idf_build_get_property(build_dir BUILD_DIR)
+        idf_build_get_property(python PYTHON)
+        set(merged_image "${build_dir}/esp32s3supermini-${ver_major}.${ver_minor}.bin")
+        add_custom_target(merged_image ALL
+            COMMAND ${python} -m esptool --chip esp32s3 merge_bin -o "${merged_image}" @flash_args
+            WORKING_DIRECTORY "${build_dir}" BYPRODUCTS "${merged_image}" VERBATIM)
+        add_dependencies(merged_image app bootloader partition_table_bin)
+    endif()
 endif()
 set(INCLUDES ${INCLUDES}
+    ${CMAKE_CURRENT_LIST_DIR}/shared
     ${CMAKE_CURRENT_LIST_DIR}/pico-fido/src/fido
     ${CMAKE_CURRENT_LIST_DIR}/pico-fido/src
     ${CMAKE_CURRENT_LIST_DIR}/pico-openpgp/src/openpgp
