@@ -8,6 +8,31 @@ This is a fork of the last community edition version of the pico-fido2 firmware,
 
 ## ESP32-S3 with a native controller and relay mode
 
+One-command release build on Windows, macOS and Linux:
+
+```sh
+python build_firmware_and_controller.py --help
+python build_firmware_and_controller.py --qt-path /path/to/Qt/kit
+```
+
+The script checks all required tools, downloads/verifies dependencies and
+configures both projects before compiling. Use `--check-only` to stop after
+preflight, `--firmware-only` to build the ESP32-S3 relay firmware, or
+`--firmware path/to/esp32s3supermini-<version>.bin` to reuse that image and its
+adjacent `LICENSES/` directory without installing ESP-IDF. See `--help` for
+platform-specific setup and signing options. Packages appear in `dist/`; every
+desktop package includes firmware, Qt GUI, CLI, storage helper and `LICENSES/`
+(inside the app's `Contents/Resources` on macOS).
+
+[Firmware and controller release](.github/workflows/release.yml) uses this same
+script: build firmware once, package it on all three hosts, then publish a
+GitHub Release only after every platform succeeds. Run it from Actions with a
+new tag, or push a `controller-v*` tag. Windows is x64; Linux is x64 built on
+Ubuntu 22.04; macOS uses the native architecture of the `macos-15` runner.
+The Linux package includes Qt and non-glibc runtime libraries; the desktop must
+provide Secret Service and USB permissions. macOS packages are ad-hoc signed
+and are not notarized.
+
 The optional `ENABLE_REMOTE_PRESENCE` build adds a separate USB HID interface for
 the native controller in `tools/native-controller` (Qt GUI `Esp32KeyConfirm` and
 `pico-fido-cli`; Windows and Linux, macOS prepared but untested). Each computer
