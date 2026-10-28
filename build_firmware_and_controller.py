@@ -536,7 +536,7 @@ class Builder:
                     "platform": HOST, "architecture": platform.machine(), "firmware_idf": "5.5.6"}
         (directory / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         files = sorted(p for p in directory.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
-        (directory / "SHA256SUMS").write_text("".join(f"{sha256(p)}  {p.relative_to(directory).as_posix()}\n" for p in files), encoding="utf-8")
+        (directory / "SHA256SUMS").write_text("".join(f"{sha256(p)}  {p.relative_to(directory).as_posix()}\n" for p in files), encoding="utf-8", newline="\n")
 
     def build_controller(self):
         run(["cmake", "--build", self.native, "--parallel", self.a.jobs, "--target", "Esp32KeyConfirm", "pico-fido-cli"], env=self.env)
@@ -597,7 +597,7 @@ class Builder:
             partial = self.output / (archive.name + ".partial")
             copy(archive, partial)
             partial.replace(final)
-            (self.output / (archive.name + ".sha256")).write_text(f"{sha256(final)}  {final.name}\n", encoding="utf-8")
+            (self.output / (archive.name + ".sha256")).write_text(f"{sha256(final)}  {final.name}\n", encoding="utf-8", newline="\n")
             print(f"Package ready: {final}", flush=True)
 
 

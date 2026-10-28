@@ -123,6 +123,19 @@ class BuildTests(unittest.TestCase):
                     builder.check_qt()
                     self.assertEqual(builder.mac_deploy_options, expected)
 
+    def test_checksum_manifest_uses_lf_on_every_host(self):
+        # Runs on Windows too: GNU sha256sum treats a CR as part of the filename.
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "run", return_value="test-commit"):
+            root = Path(directory)
+            (root / "payload with spaces.bin").write_bytes(b"test payload")
+            builder = build.Builder(build.parser().parse_args([]))
+            builder.write_manifest(root)
+            data = (root / "SHA256SUMS").read_bytes()
+            self.assertNotIn(b"\r", data)
+            for line in data.decode().splitlines():
+                expected, name = line.split("  ", 1)
+                self.assertEqual(build.sha256(root / name), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
