@@ -24,7 +24,7 @@ HOST = platform.system()
 EXE = ".exe" if HOST == "Windows" else ""
 APP = "Pico FIDO Controller.app"
 GO_SOURCE = ROOT / "tools/relay-storage"
-NOTICE = re.compile(r"^(LICENSE|LICENCE|COPYING|NOTICE|AUTHORS)([._-]|$)", re.I)
+NOTICE = re.compile(r"^(LICENSE|LICENCE|COPYING|COPYRIGHT|NOTICE|AUTHORS|UNLICENSE|[AL]?GPL)([._-]|$)", re.I)
 
 
 class BuildError(Exception):
@@ -175,6 +175,7 @@ class Builder:
         self.modules = []
         self.linux_libraries = {}
         self.linux_copyrights = {}
+        self.macos_notices = self.build / "dependencies/macos-notices"
 
     def check(self, action):
         try:
@@ -311,6 +312,8 @@ class Builder:
             self.check(self.configure_controller)
             if HOST == "Linux":
                 self.check(self.prepare_linux)
+            elif HOST == "Darwin":
+                self.check(self.prepare_macos_notices)
         if not self.firmware:
             self.check(lambda: run(self.idf_command + ["reconfigure"], env=self.env))
         self.fail_preflight()
@@ -380,6 +383,41 @@ class Builder:
             if match and not re.match(r"^(lib(c|m|pthread|dl|rt|resolv|util)\.so|ld-linux)", match[1]):
                 dependencies[match[1]] = Path(match[2])
         return dependencies
+
+    def prepare_macos_notices(self):
+        # Homebrew Qt links other Homebrew libraries, unlike the official kit.
+        # Collect those bottles' upstream notices before compiling anything.
+        if self.macos_notices.exists():
+            shutil.rmtree(self.macos_notices)
+        libs = Path(self.qt["QT_INSTALL_LIBS"])
+        queue = [libs / f"Qt{name}.framework/Qt{name}" for name in ("Core", "Gui", "Widgets", "DBus")]
+        for kind in ("platforms", "imageformats", "styles"):
+            queue.extend((Path(self.qt["QT_INSTALL_PLUGINS"]) / kind).glob("*.dylib"))
+        seen, bottles = set(), set()
+        while queue:
+            binary = queue.pop().resolve()
+            if binary in seen or not binary.is_file():
+                continue
+            seen.add(binary)
+            for parent in binary.parents:
+                if (parent / "INSTALL_RECEIPT.json").is_file():
+                    bottles.add(parent)
+                    break
+            output = run(["otool", "-L", binary], capture=True)
+            for line in output.splitlines()[1:]:
+                dep = line.strip().split(" (", 1)[0]
+                if dep.startswith(("/usr/lib/", "/System/Library/")):
+                    continue
+                if dep.startswith("@rpath/"):
+                    tail = dep[len("@rpath/"):]
+                    candidates = [libs / tail, binary.parent / tail]
+                    queue.extend(p for p in candidates if p.is_file())
+                elif dep.startswith("@loader_path/"):
+                    queue.append(binary.parent / dep[len("@loader_path/"):])
+                elif dep.startswith("/"):
+                    queue.append(Path(dep))
+        for bottle in sorted(bottles):
+            copy_notices(bottle, self.macos_notices / bottle.parent.name / bottle.name)
 
     def prepare_linux(self):
         self.plugins = []
@@ -455,6 +493,10 @@ class Builder:
             copy(GO_SOURCE / name, destination / "PicoFidoStorage" / name)
         for package, path in self.linux_copyrights.items():
             copy(path, destination / "system" / package / "copyright")
+        if HOST == "Linux":
+            shutil.copytree("/usr/share/common-licenses", destination / "system/common-licenses")
+        if HOST == "Darwin" and self.macos_notices.exists():
+            shutil.copytree(self.macos_notices, destination / "Homebrew")
 
     def deploy_linux(self, stage):
         # Preflight resolves the Qt/plugin/libsecret closure. Check real targets
