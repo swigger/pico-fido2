@@ -343,13 +343,20 @@ class Builder:
             raise BuildError(f"Missing Go toolchain LICENSE under {goroot}")
 
     def prepare_qt_licenses(self):
-        # Include Qt's third-party attributions as well as its top-level licenses.
+        # Deployment tools can pull QtSvg in through image/icon plugins even
+        # though the application itself only links Widgets (part of qtbase).
+        self.qt_notice_trees = {}
+        for module in ("qtbase", "qtsvg"):
+            self.prepare_qt_module_licenses(module)
+
+    def prepare_qt_module_licenses(self, module):
         ver = self.qt["QT_VERSION"]
-        self.qt_notices = self.build / "dependencies" / f"qtbase-{ver}-notices"
-        if (self.qt_notices / ".complete").is_file():
+        notices = self.build / "dependencies" / f"{module}-{ver}-notices"
+        self.qt_notice_trees[module] = notices
+        if (notices / ".complete").is_file():
             return
-        url = f"https://github.com/qt/qtbase/archive/refs/tags/v{ver}.tar.gz"
-        archive = self.build / "dependencies" / f"qtbase-{ver}.tar.gz"
+        url = f"https://github.com/qt/{module}/archive/refs/tags/v{ver}.tar.gz"
+        archive = self.build / "dependencies" / f"{module}-{ver}.tar.gz"
         archive.parent.mkdir(parents=True, exist_ok=True)
         print(f"Downloading Qt {ver} license/attribution source: {url}", flush=True)
         with urllib.request.urlopen(url, timeout=120) as response, archive.open("wb") as stream:
@@ -362,15 +369,15 @@ class Builder:
                     continue
                 if "LICENSES" not in relative.parts and not NOTICE.match(relative.name) and relative.name != "qt_attribution.json":
                     continue
-                target = self.qt_notices / relative
+                target = notices / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with tar.extractfile(member) as source, target.open("wb") as destination:
                     shutil.copyfileobj(source, destination)
                 count += 1
         if not count:
             raise BuildError("Qt source archive contained no notices.")
-        (self.qt_notices / "SOURCE.txt").write_text(url + "\nSHA256: " + sha256(archive) + "\n", encoding="utf-8")
-        (self.qt_notices / ".complete").touch()
+        (notices / "SOURCE.txt").write_text(url + "\nSHA256: " + sha256(archive) + "\n", encoding="utf-8")
+        (notices / ".complete").touch()
 
     def configure_controller(self):
         run(["cmake", "-S", ROOT / "tools/native-controller", "-B", self.native,
@@ -487,7 +494,8 @@ class Builder:
         copy(ROOT / "tools/native-controller/THIRD_PARTY.txt", destination / "THIRD_PARTY.txt")
         for name in ("relay_mbedtls", "relay_hidapi"):
             copy_notices(self.native / "_deps" / f"{name}-src", destination / name)
-        shutil.copytree(self.qt_notices, destination / "Qt", ignore=shutil.ignore_patterns(".complete"))
+        for module, notices in self.qt_notice_trees.items():
+            shutil.copytree(notices, destination / "Qt" / module, ignore=shutil.ignore_patterns(".complete"))
         shutil.copytree(self.firmware_licenses, destination / "firmware")
         for name, ver, notices in self.modules:
             directory = re.sub(r"[^a-zA-Z0-9.@_-]", "_", name + "@" + ver)
@@ -554,6 +562,10 @@ class Builder:
             self.controller_licenses(resources / "LICENSES")
             if HOST == "Windows":
                 run([self.deploy, "--release", "--no-translations", "--compiler-runtime", binaries / "Esp32KeyConfirm.exe"], env=self.env)
+                for installer in stage.glob("vc_redist*.exe"):
+                    runtime = stage / "runtime"
+                    runtime.mkdir(exist_ok=True)
+                    installer.rename(runtime / installer.name)
             elif HOST == "Darwin":
                 run([self.deploy, stage / APP, "-always-overwrite", *self.mac_deploy_options,
                      f"-libpath={self.qt['QT_INSTALL_LIBS']}", f"-executable={binaries / 'pico-fido-cli'}"])
@@ -570,6 +582,7 @@ class Builder:
             (stage / "README.txt").write_text(
                 "Launch: " + (APP if HOST == "Darwin" else "Esp32KeyConfirm" + EXE) + "\n"
                 "pico-fido-cli is for terminal use; PicoFidoStorage is the controller's helper.\n"
+                "Windows: if a VCRUNTIME/MSVCP DLL is missing, install runtime/vc_redist.x64.exe once.\n"
                 "Keep the package together. Licenses are in LICENSES/ (macOS: app Contents/Resources/LICENSES).\n"
                 "The merged firmware is for blank ESP32-S3 devices. See the included instructions before flashing.\n"
                 "Linux: desktop Secret Service and USB hidraw permission are required; see tools/native-controller/BUILD.txt.\n"
