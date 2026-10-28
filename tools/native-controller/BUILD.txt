@@ -29,7 +29,7 @@ Windows 10/11:
   Runtime: dynamic MSVC CRT and the Qt DLLs (deploy with windeployqt).
 Linux (Debian/Ubuntu package names):
   build-essential cmake pkg-config qt6-base-dev (or qtbase5-dev)
-  libsecret-1-dev libudev-dev
+  libsecret-1-dev libudev-dev libgl1-mesa-dev
   libudev is needed by hidapi's hidraw backend (libusb is not used).
   Qt DBus (shipped with the Qt base dev package) is required; the
   GUI reacts to screen-saver/logind session locks.

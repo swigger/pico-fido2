@@ -107,7 +107,7 @@ def parser():
   Linux (Debian/Ubuntu): C/C++ compiler, pkg-config, patchelf, dpkg-query;
        Qt 6 Widgets/DBus, libsecret and libudev headers. For example:
        sudo apt install build-essential cmake ninja-build pkg-config patchelf \
-         qt6-base-dev qt6-base-dev-tools libsecret-1-dev libudev-dev
+         qt6-base-dev qt6-base-dev-tools libsecret-1-dev libudev-dev libgl1-mesa-dev
        Install a sufficiently new Go separately. Runtime needs a desktop session
        with Secret Service (GNOME Keyring/KWallet) and permission for USB hidraw.
 
@@ -298,7 +298,7 @@ class Builder:
             if HOST == "Linux":
                 for tool in ("pkg-config", "patchelf", "ldd", "dpkg-query"):
                     self.check(lambda tool=tool: self.tool(tool))
-                self.check(lambda: run(["pkg-config", "--exists", "libsecret-1", "libudev"], capture=True))
+                self.check(lambda: run(["pkg-config", "--print-errors", "--exists", "libsecret-1", "libudev", "gl"], capture=True))
         self.fail_preflight()
         self.build.mkdir(parents=True, exist_ok=True)
         self.output.mkdir(parents=True, exist_ok=True)
