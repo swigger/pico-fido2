@@ -103,7 +103,10 @@ def parser():
   Windows x64: Visual Studio 2022 Desktop C++ + Windows SDK; Qt msvc2022_64
        with windeployqt. Use an x64 Native Tools terminal (then activate IDF).
   macOS: Xcode Command Line Tools; Qt with macdeployqt, codesign and ditto.
-       Homebrew: brew install cmake ninja go qtbase
+       Default: Universal (arm64 + x86_64), requiring a Universal Qt 6 kit
+       (e.g. official Qt 6.8.3 macos kit). All Qt/runtime slices are checked.
+       Homebrew: brew install cmake ninja go; Homebrew Qt is single-architecture
+       and needs an explicit --macos-arch arm64 or --macos-arch x86_64.
   Linux (Debian/Ubuntu): C/C++ compiler, pkg-config, patchelf, dpkg-query;
        Qt 6 Widgets/DBus, libsecret and libudev headers. For example:
        sudo apt install build-essential cmake ninja-build pkg-config patchelf \
@@ -120,7 +123,8 @@ Setup:
 
 Examples (run from any directory; paths supplied are relative to your cwd):
   python build_firmware_and_controller.py --qt-path C:/Qt/6.8.3/msvc2022_64
-  python3 build_firmware_and_controller.py --qt-path /opt/homebrew/opt/qtbase
+  python3 build_firmware_and_controller.py --qt-path ~/Qt/6.8.3/macos
+  python3 build_firmware_and_controller.py --macos-arch arm64 --qt-path /opt/homebrew/opt/qtbase
   python3 build_firmware_and_controller.py --check-only --qt-path /usr
   python3 build_firmware_and_controller.py --firmware-only
   python3 build_firmware_and_controller.py --firmware dist/firmware/esp32s3supermini-7.3.bin
@@ -134,7 +138,7 @@ Outputs:
        LICENSES/. macOS stores these inside the app bundle. Linux bundles Qt
        and dependent libraries, excluding glibc/graphics drivers; build on the
        oldest distribution you intend to support (CI uses Ubuntu 22.04).
-       macOS builds for the runner's architecture, ad-hoc signed by default;
+       macOS defaults to Universal (Intel + Apple Silicon), ad-hoc signed;
        this is not Apple notarization. --codesign-identity uses your certificate.
 
 --check-only also downloads/verifies dependencies and configures CMake (including
@@ -157,6 +161,8 @@ atomically. Existing output directories not owned by this script are preserved.
     p.add_argument("--jobs", type=int, default=min(os.cpu_count() or 2, 8), help="Parallel build jobs (default: CPU count capped at 8).")
     p.add_argument("--check-only", action="store_true", help="Run the entire dependency/configuration preflight and exit without a build.")
     p.add_argument("--codesign-identity", default="-", help="macOS signing identity (default: - for ad-hoc).")
+    p.add_argument("--macos-arch", choices=("universal", "arm64", "x86_64"), default="universal",
+                   help="macOS controller architectures (default: universal = arm64 + x86_64); ignored on other hosts and with --firmware-only.")
     return p
 
 
@@ -166,6 +172,9 @@ class Builder:
         self.build = args.build_dir.resolve()
         self.output = args.output_dir.resolve()
         self.native = self.build / "controller"
+        self.macos_arches = ("arm64", "x86_64") if args.macos_arch == "universal" else (args.macos_arch,)
+        if HOST == "Darwin":
+            self.native = self.build / ("controller-macos-" + args.macos_arch)
         self.idf_build = self.build / "firmware"
         self.env = os.environ.copy()
         self.goenv = dict(self.env, CGO_ENABLED="0", GOTOOLCHAIN="local", GOFLAGS="-mod=readonly")
@@ -291,7 +300,7 @@ class Builder:
                 for tool in ("cc", "c++"):
                     self.check(lambda tool=tool: self.tool(tool))
             if HOST == "Darwin":
-                for tool in ("xcrun", "codesign", "ditto", "otool"):
+                for tool in ("xcrun", "codesign", "ditto", "otool", "lipo"):
                     self.check(lambda tool=tool: self.tool(tool))
                 self.check(lambda: run(["xcrun", "--show-sdk-path"], capture=True))
                 if self.a.codesign_identity != "-":
@@ -312,13 +321,14 @@ class Builder:
                 stream.write(b"writable")
         # Complete every download and configure step before either project builds.
         if not self.a.firmware_only:
+            if HOST == "Darwin":
+                self.check(self.prepare_macos_notices)
+                self.fail_preflight()
             self.check(self.prepare_go)
             self.check(self.prepare_qt_licenses)
             self.check(self.configure_controller)
             if HOST == "Linux":
                 self.check(self.prepare_linux)
-            elif HOST == "Darwin":
-                self.check(self.prepare_macos_notices)
         if not self.firmware:
             self.check(lambda: run(self.idf_command + ["reconfigure"], env=self.env))
         self.fail_preflight()
@@ -327,9 +337,12 @@ class Builder:
     def prepare_go(self):
         run(["go", "mod", "download"], cwd=GO_SOURCE, env=self.goenv)
         run(["go", "mod", "verify"], cwd=GO_SOURCE, env=self.goenv)
-        modules = run(["go", "list", "-deps", "-f", "{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}",
-                       "./cmd/relay-storage-helper"], cwd=GO_SOURCE, env=self.goenv, capture=True)
-        for line in sorted(set(modules.splitlines())):
+        modules = set()
+        for env in self.go_build_environments():
+            output = run(["go", "list", "-deps", "-f", "{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}",
+                          "./cmd/relay-storage-helper"], cwd=GO_SOURCE, env=env, capture=True)
+            modules.update(output.splitlines())
+        for line in sorted(modules):
             if not line or line.startswith("pico-fido2/"):
                 continue
             name, ver, directory = line.split("|")
@@ -380,10 +393,52 @@ class Builder:
         (notices / ".complete").touch()
 
     def configure_controller(self):
+        options = ["-DCMAKE_OSX_ARCHITECTURES=" + ";".join(self.macos_arches)] if HOST == "Darwin" else []
         run(["cmake", "-S", ROOT / "tools/native-controller", "-B", self.native,
              "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_TESTING=OFF",
              "-DPICO_CONTROLLER_GUI=ON", "-DENABLE_RELAY_DIAGNOSTICS=OFF", "-DPICO_FIRMWARE_IMAGE=",
-             "-DPICO_MACOS_CODESIGN_IDENTITY=", f"-DCMAKE_PREFIX_PATH={self.qt_prefix.as_posix()}"], env=self.env)
+             "-DPICO_MACOS_CODESIGN_IDENTITY=", f"-DCMAKE_PREFIX_PATH={self.qt_prefix.as_posix()}", *options], env=self.env)
+
+    def go_build_environments(self):
+        if HOST == "Darwin":
+            return [dict(self.goenv, GOOS="darwin", GOARCH={"arm64": "arm64", "x86_64": "amd64"}[arch])
+                    for arch in self.macos_arches]
+        return [self.goenv]
+
+    def build_storage_helper(self, destination):
+        # Go emits one architecture per build; keep the thin intermediates out
+        # of the app, then merge before signing the complete bundle.
+        with tempfile.TemporaryDirectory(prefix="go-helper-", dir=self.build) as temp:
+            slices = []
+            for index, env in enumerate(self.go_build_environments()):
+                binary = Path(temp) / (str(index) + EXE)
+                run(["go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-s -w", "-o", binary,
+                     "./cmd/relay-storage-helper"], cwd=GO_SOURCE, env=env)
+                slices.append(binary)
+            if len(slices) > 1:
+                run(["lipo", "-create", *slices, "-output", destination])
+            else:
+                copy(slices[0], destination)
+
+    def check_macos_architectures(self, binary):
+        found = set(run(["lipo", "-archs", binary], capture=True).split())
+        missing = set(self.macos_arches) - found
+        if missing:
+            raise BuildError(f"{binary}: missing macOS architecture(s) {', '.join(sorted(missing))}; "
+                             f"found {', '.join(sorted(found)) or 'none'}. "
+                             "Use a Universal Qt kit for the default build, or explicitly select "
+                             "--macos-arch arm64 / --macos-arch x86_64 with matching dependencies.")
+
+    def verify_macos_bundle(self, app):
+        # Verify every Mach-O, including deployed frameworks and plugins, so a
+        # fat launcher cannot hide a single-architecture runtime dependency.
+        magic = {b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+                 b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
+        for path in sorted(app.rglob("*")):
+            if path.is_file() and not path.is_symlink():
+                with path.open("rb") as stream:
+                    if stream.read(4) in magic:
+                        self.check_macos_architectures(path)
 
     def dependencies(self, binary):
         result = run(["ldd", binary], capture=True)
@@ -398,12 +453,12 @@ class Builder:
 
     def prepare_macos_notices(self):
         # Homebrew Qt links other Homebrew libraries, unlike the official kit.
-        # Collect those bottles' upstream notices before compiling anything.
+        # Check architectures and collect upstream notices before compiling.
         if self.macos_notices.exists():
             shutil.rmtree(self.macos_notices)
         libs = Path(self.qt["QT_INSTALL_LIBS"])
         queue = [libs / f"Qt{name}.framework/Qt{name}" for name in ("Core", "Gui", "Widgets", "DBus")]
-        for kind in ("platforms", "imageformats", "styles"):
+        for kind in ("platforms", "imageformats", "styles", "iconengines", "generic", "networkinformation", "tls"):
             queue.extend((Path(self.qt["QT_INSTALL_PLUGINS"]) / kind).glob("*.dylib"))
         seen, bottles = set(), set()
         while queue:
@@ -411,12 +466,15 @@ class Builder:
             if binary in seen or not binary.is_file():
                 continue
             seen.add(binary)
+            self.check_macos_architectures(binary)
             for parent in binary.parents:
                 if (parent / "INSTALL_RECEIPT.json").is_file():
                     bottles.add(parent)
                     break
-            output = run(["otool", "-L", binary], capture=True)
-            for line in output.splitlines()[1:]:
+            output = run(["otool", "-arch", "all", "-L", binary], capture=True)
+            for line in output.splitlines():
+                if not line.startswith("\t"):
+                    continue  # Skip each architecture's file header.
                 dep = line.strip().split(" (", 1)[0]
                 if dep.startswith(("/usr/lib/", "/System/Library/")):
                     continue
@@ -531,9 +589,11 @@ class Builder:
         for path in [stage / "Esp32KeyConfirm", stage / "pico-fido-cli", *list((stage / "plugins").rglob("*.so"))]:
             self.dependencies(path)
 
-    def write_manifest(self, directory):
+    def write_manifest(self, directory, *, controller=False):
         manifest = {"version": self.a.version, "source_commit": run(["git", "rev-parse", "HEAD"], capture=True),
                     "platform": HOST, "architecture": platform.machine(), "firmware_idf": "5.5.6"}
+        if controller and HOST == "Darwin":
+            manifest.update(architecture=self.a.macos_arch, architectures=list(self.macos_arches))
         (directory / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         files = sorted(p for p in directory.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
         (directory / "SHA256SUMS").write_text("".join(f"{sha256(p)}  {p.relative_to(directory).as_posix()}\n" for p in files), encoding="utf-8", newline="\n")
@@ -542,6 +602,8 @@ class Builder:
         run(["cmake", "--build", self.native, "--parallel", self.a.jobs, "--target", "Esp32KeyConfirm", "pico-fido-cli"], env=self.env)
         system = {"Darwin": "macos", "Windows": "windows", "Linux": "linux"}[HOST]
         arch = {"AMD64": "x86_64", "aarch64": "arm64"}.get(platform.machine(), platform.machine())
+        if HOST == "Darwin":
+            arch = self.a.macos_arch
         label = f"PicoFido2-{self.a.version}-{system}-{arch}"
         with tempfile.TemporaryDirectory(prefix="package-", dir=self.build) as temp:
             stage = Path(temp) / label
@@ -555,9 +617,7 @@ class Builder:
                 copy(self.native / ("Esp32KeyConfirm" + EXE), binaries / ("Esp32KeyConfirm" + EXE))
             copy(self.native / ("pico-fido-cli" + EXE), binaries / ("pico-fido-cli" + EXE))
             helper = binaries / ("PicoFidoStorage" + EXE)
-            run(["go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-s -w", "-o", helper,
-                 "./cmd/relay-storage-helper"], cwd=GO_SOURCE, env=self.goenv)
-            run([helper, "--version"])
+            self.build_storage_helper(helper)
             copy(self.firmware, resources / self.firmware.name)
             self.controller_licenses(resources / "LICENSES")
             if HOST == "Windows":
@@ -569,15 +629,20 @@ class Builder:
             elif HOST == "Darwin":
                 run([self.deploy, stage / APP, "-always-overwrite", *self.mac_deploy_options,
                      f"-libpath={self.qt['QT_INSTALL_LIBS']}", f"-executable={binaries / 'pico-fido-cli'}"])
+                self.verify_macos_bundle(stage / APP)
                 run(["codesign", "--force", "--deep", "--timestamp=none", "--sign", self.a.codesign_identity, stage / APP])
                 run(["codesign", "--verify", "--deep", "--strict", stage / APP])
             else:
                 self.deploy_linux(stage)
             # This command only generates a random ID; it neither opens USB nor
             # reads/writes the user's keychain, profiles or credentials.
-            run([binaries / ("pico-fido-cli" + EXE), "--storage-new-id"])
             gui = binaries / ("Pico FIDO Controller" if HOST == "Darwin" else "Esp32KeyConfirm" + EXE)
-            run([gui, "--storage-new-id"], env=dict(self.env, QT_QPA_PLATFORM="offscreen"))
+            if HOST != "Darwin" or platform.machine() in self.macos_arches:
+                run([helper, "--version"])
+                run([binaries / ("pico-fido-cli" + EXE), "--storage-new-id"])
+                run([gui, "--storage-new-id"], env=dict(self.env, QT_QPA_PLATFORM="offscreen"))
+            else:
+                print("Skipping startup smoke checks: selected macOS architecture differs from this host.")
             copy(ROOT / "ESP32-FIDO2使用说明.txt", stage / "使用说明.txt")
             (stage / "README.txt").write_text(
                 "Launch: " + (APP if HOST == "Darwin" else "Esp32KeyConfirm" + EXE) + "\n"
@@ -587,7 +652,7 @@ class Builder:
                 "The merged firmware is for blank ESP32-S3 devices. See the included instructions before flashing.\n"
                 "Linux: desktop Secret Service and USB hidraw permission are required; see tools/native-controller/BUILD.txt.\n"
                 "Source: https://github.com/swigger/pico-fido2\n", encoding="utf-8")
-            self.write_manifest(stage)
+            self.write_manifest(stage, controller=True)
             if HOST == "Darwin":
                 archive = Path(temp) / (label + ".zip")
                 run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", stage, archive])

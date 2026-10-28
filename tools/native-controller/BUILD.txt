@@ -8,6 +8,11 @@ Recommended release build (firmware + controller + runtime + licenses):
 This entry point performs dependency/download/configure preflight before either
 project builds. It supports Windows, macOS and Debian/Ubuntu Linux. See --help
 for firmware reuse, ESP-IDF setup, output paths and platform requirements.
+macOS release builds default to Universal (arm64 + x86_64), including the GUI,
+CLI, storage helper and Qt runtime. Use a Universal Qt kit (e.g. official
+Qt 6.8.3 macos). Preflight checks dependency architectures before compiling.
+To use single-architecture Qt such as Homebrew, explicitly pass
+--macos-arch arm64 or --macos-arch x86_64. Caches are separate per selection.
 All license and notice files in release packages live under LICENSES (macOS:
 Contents/Resources/LICENSES). The commands below are for development builds.
 

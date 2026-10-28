@@ -2,6 +2,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -135,6 +136,78 @@ class BuildTests(unittest.TestCase):
             for line in data.decode().splitlines():
                 expected, name = line.split("  ", 1)
                 self.assertEqual(build.sha256(root / name), expected)
+
+    def test_macos_default_build_and_manifest_include_both_architectures(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "HOST", "Darwin"), \
+             patch.object(build, "run", return_value="test-commit") as run:
+            builder = build.Builder(build.parser().parse_args(["--build-dir", directory]))
+            builder.qt_prefix = Path(directory)
+            builder.configure_controller()
+            self.assertIn("-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64", run.call_args.args[0])
+            builder.build_storage_helper(Path(directory) / "helper")
+            go_calls = [call for call in run.call_args_list if call.args[0][:2] == ["go", "build"]]
+            self.assertEqual([call.kwargs["env"]["GOARCH"] for call in go_calls], ["arm64", "amd64"])
+            self.assertTrue(all(call.kwargs["env"]["GOOS"] == "darwin" for call in go_calls))
+            self.assertEqual(run.call_args.args[0][:2], ["lipo", "-create"])
+            builder.write_manifest(Path(directory), controller=True)
+            manifest = json.loads((Path(directory) / "build-manifest.json").read_text())
+            self.assertEqual(manifest["architecture"], "universal")
+            self.assertEqual(manifest["architectures"], ["arm64", "x86_64"])
+
+    def test_macos_single_architecture_is_explicit_and_uses_separate_cache(self):
+        with patch.object(build, "HOST", "Darwin"):
+            universal = build.Builder(build.parser().parse_args([]))
+            arm = build.Builder(build.parser().parse_args(["--macos-arch", "arm64"]))
+            intel = build.Builder(build.parser().parse_args(["--macos-arch", "x86_64"]))
+            self.assertEqual(arm.macos_arches, ("arm64",))
+            self.assertEqual(intel.go_build_environments()[0]["GOARCH"], "amd64")
+            self.assertEqual(len({universal.native, arm.native, intel.native}), 3)
+
+    def test_single_arch_qt_fails_before_downloads_or_project_builds(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "HOST", "Darwin"), \
+             patch.object(build.Builder, "tool"), patch.object(build.Builder, "check_submodules"), \
+             patch.object(build.Builder, "check_idf"), patch.object(build.Builder, "check_qt"), \
+             patch.object(build, "run", return_value="arm64"), \
+             patch.object(build.Builder, "prepare_go") as go, \
+             patch.object(build.Builder, "configure_controller") as configure:
+            root = Path(directory)
+            (root / "lib/QtCore.framework").mkdir(parents=True)
+            (root / "lib/QtCore.framework/QtCore").touch()
+            builder = build.Builder(build.parser().parse_args(["--build-dir", directory, "--output-dir", directory]))
+            builder.qt = {"QT_INSTALL_LIBS": str(root / "lib"), "QT_INSTALL_PLUGINS": str(root / "plugins")}
+            with self.assertRaisesRegex(build.BuildError, "missing macOS architecture.*x86_64"):
+                builder.preflight()
+            go.assert_not_called()
+            configure.assert_not_called()
+
+    def test_macos_bundle_rejects_thin_plugin_even_with_universal_launcher(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "HOST", "Darwin"):
+            app = Path(directory)
+            for name in ("Contents/MacOS/gui", "Contents/PlugIns/platforms/libqcocoa.dylib"):
+                path = app / name
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"\xcf\xfa\xed\xfe")
+            (app / "README").write_text("not a binary")
+            builder = build.Builder(build.parser().parse_args([]))
+            with patch.object(build, "run", side_effect=["arm64 x86_64", "arm64"]):
+                with self.assertRaisesRegex(build.BuildError, "libqcocoa.dylib.*x86_64"):
+                    builder.verify_macos_bundle(app)
+
+    def test_go_licenses_cover_dependencies_of_both_macos_architectures(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "HOST", "Darwin"):
+            root = Path(directory)
+            modules = []
+            for name in ("arm-module", "intel-module"):
+                module = root / name
+                module.mkdir()
+                (module / "LICENSE").write_text("fixture")
+                modules.append(f"example.org/{name}|v1.0.0|{module}")
+            (root / "LICENSE").write_text("Go fixture")
+            builder = build.Builder(build.parser().parse_args([]))
+            with patch.object(build, "run", side_effect=["", "", modules[0], modules[1], str(root)]):
+                builder.prepare_go()
+            self.assertEqual({name for name, _, _ in builder.modules},
+                             {"example.org/arm-module", "example.org/intel-module"})
 
 
 if __name__ == "__main__":

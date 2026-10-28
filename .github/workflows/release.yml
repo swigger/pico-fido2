@@ -105,6 +105,19 @@ jobs:
         run: |
           image=(dist/firmware/esp32s3supermini-*.bin)
           python build_firmware_and_controller.py --firmware "${image[0]}" --version "$RELEASE_VERSION" --jobs 4
+      - name: Run both macOS Universal architectures from the package
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          archives=(dist/PicoFido2-*-macos-universal.zip)
+          ditto -x -k "${archives[0]}" "$RUNNER_TEMP/universal-check"
+          packages=("$RUNNER_TEMP/universal-check"/PicoFido2-*)
+          binaries="${packages[0]}/Pico FIDO Controller.app/Contents/MacOS"
+          for cpu in arm64 x86_64; do
+            arch -"$cpu" "$binaries/PicoFidoStorage" --version
+            arch -"$cpu" "$binaries/pico-fido-cli" --storage-new-id
+            arch -"$cpu" "$binaries/Pico FIDO Controller" --storage-new-id
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: controller-${{ matrix.os }}
@@ -146,7 +159,7 @@ jobs:
           ESP32-S3 relay firmware and native controllers built by build_firmware_and_controller.py.
 
           - Windows x64: unzip and run Esp32KeyConfirm.exe.
-          - macOS: unzip and open Pico FIDO Controller.app (native runner architecture, ad-hoc signed, not notarized).
+          - macOS Universal: unzip and open Pico FIDO Controller.app. GUI, CLI, storage helper and bundled Qt runtime support both Intel x86_64 and Apple Silicon arm64 (ad-hoc signed, not notarized).
           - Linux x64: extract and run Esp32KeyConfirm. Built on Ubuntu 22.04; requires a desktop Secret Service and USB hidraw access.
           - All desktop packages include the same merged firmware, the CLI, storage helper and LICENSES directory (inside Contents/Resources on macOS).
           - The separate firmware archive also includes the app, bootloader and partition-table images. Merged factory images are for blank devices; see the repository update instructions before updating a populated key.
