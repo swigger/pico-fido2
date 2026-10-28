@@ -616,6 +616,28 @@ static void detachedLocalTests(const std::filesystem::path &dir, const std::file
         { relay::Storage restarted(target, launch); need(restarted.choice().kind == relay::StorageKind::Local); (void)restarted.open(); }
     }
 }
+static void missingProfileTests(const std::filesystem::path &dir, const std::filesystem::path &executable) {
+    relay::CloudLaunch launch; launch.helper = executable; launch.profile = dir / "unsaved-profile";
+    auto target = dir / "missing-profile-selection";
+    relay::Storage storage(target, launch);
+    auto selection = read(target / selector);
+    auto rejectsMissing = [&](auto action) {
+        bool explained = false;
+        try { action(); }
+        catch (const std::exception &e) { explained = std::string(e.what()).find("请先配置云存储") != std::string::npos; }
+        need(explained, "missing cloud profile was not explained");
+        need(storage.choice().kind == relay::StorageKind::Local && read(target / selector) == selection,
+             "missing cloud profile left a pending cloud operation");
+        need(!std::filesystem::exists(withSuffix(launch.profile, ".starts")), "missing profile launched a cloud operation");
+    };
+    rejectsMissing([&] { storage.initializeCloud(ns, password); });
+    rejectsMissing([&] { storage.selectCloud(ns, password); });
+    mode(launch.profile, ""); // An interrupted/empty profile must not pass the preflight either.
+    rejectsMissing([&] { storage.initializeCloud(ns, password); });
+    storage.initializeLocal(); auto original = read(target / local);
+    rejectsMissing([&] { storage.migrateCloud(password); });
+    need(read(target / local) == original && storage.open().accounts().empty(), "missing profile retired or changed the local vault");
+}
 static void selectionTests(const std::filesystem::path &dir, const std::filesystem::path &executable) {
     optimisticTests(dir, executable);
     attestationStorageTests(dir, executable);
@@ -752,6 +774,7 @@ int main(int argc, char **argv) {
         struct Cleanup { std::filesystem::path p; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(p, ec); } } cleanup{dir};
         if (codesOnly) { rememberedCodeTests(dir, executable); std::cout << "PASS: remembered cloud recovery codes\n"; return 0; }
         if (detachedLocalOnly) { detachedLocalTests(dir, executable); detachSessionTests(dir, executable); std::cout << "PASS: local initialization and restore after cloud detach/restart\n"; return 0; }
+        missingProfileTests(dir, executable);
         selectionTests(dir, executable);
         detachTests(dir, executable);
         detachSessionTests(dir, executable);

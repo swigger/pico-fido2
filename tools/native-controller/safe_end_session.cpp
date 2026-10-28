@@ -3,6 +3,7 @@
 #include "relay_server.h"
 #include "relay_settings.h"
 #include "relay_backup.h"
+#include <algorithm>
 #include <chrono>
 #include <stdexcept>
 #include <utility>
@@ -53,7 +54,13 @@ void SafeEndSession::readState() {
         (choice.kind != StorageKind::Local || std::filesystem::exists(local) || std::filesystem::exists(marker));
     auto ns = choice.nameSpace;
     if (choice.kind == StorageKind::Local && initialized) ns = opened ? opened->namespaceId() : current.localNamespace();
-    std::lock_guard<std::mutex> guard(mutex); state.kind = choice.kind; state.nameSpace = ns; state.initialized = initialized; ++state.version;
+    auto profiles = CloudStorage::configuredNamespaces(dir / "cloud");
+    std::lock_guard<std::mutex> guard(mutex);
+    if (ns.empty() && !initialized) {
+        if (std::find(profiles.begin(), profiles.end(), state.nameSpace) != profiles.end()) ns = state.nameSpace;
+    }
+    state.kind = choice.kind; state.nameSpace = ns; state.initialized = initialized;
+    state.cloudProfiles = std::move(profiles); ++state.version;
 }
 void SafeEndSession::release() { opened = nullptr; owner.reset(); }
 Storage &SafeEndSession::storage() { if (!owner) owner = std::make_unique<Storage>(dir, launch()); return *owner; }
@@ -128,7 +135,10 @@ void SafeEndSession::exportBackup(const std::filesystem::path &path, const std::
     storage().clearLocalAfterBackup(path, password, [this] { return canceled(); }); opened = nullptr;
     readState(); publish("加密备份已保存，本机库已清空。现在可以从备份恢复或初始化新库。", true);
 }
-void SafeEndSession::setNamespace(const std::string &nameSpace) { std::lock_guard<std::mutex> guard(mutex); state.nameSpace = nameSpace; ++state.version; }
+void SafeEndSession::setNamespace(const std::string &nameSpace) {
+    readState(); // A successful profile save immediately enables the matching cloud actions.
+    std::lock_guard<std::mutex> guard(mutex); state.nameSpace = nameSpace; ++state.version;
+}
 bool SafeEndSession::submit(std::function<void()> action) {
     { std::lock_guard<std::mutex> guard(mutex);
       if (closing || lockRequested || (working && !maintenance)) return false;

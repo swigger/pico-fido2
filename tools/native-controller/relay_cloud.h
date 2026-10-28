@@ -33,6 +33,9 @@ struct CloudIntegrityError : std::runtime_error {
 class CloudStorage {
 public:
     static Id identity(const std::string &nameSpace);
+    // Local configuration presence only; never contacts or initializes the cloud.
+    static bool profileConfigured(const std::string &nameSpace, const CloudLaunch &launch = {});
+    static std::vector<std::string> configuredNamespaces(const std::filesystem::path &directory);
     // Local OS lock only, compatible with the helper's profile lock. The caller
     // must first stop its helper and durably record explicit detach consent.
     // Idempotent; preserves the non-secret lock marker and all remote data.

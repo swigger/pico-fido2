@@ -87,6 +87,10 @@ struct Storage::State {
     CloudLaunch launchFor(const std::string &nameSpace) const {
         auto out = launch; out.highWater = directory / ("cloud-" + nameSpace + ".generation"); return out;
     }
+    void requireCloudProfile(const std::string &nameSpace) const {
+        need(CloudStorage::profileConfigured(nameSpace, launchFor(nameSpace)),
+             "尚未保存此凭证库的云存储配置；请先配置云存储，再建立、连接或迁移云端库");
+    }
     void localOnly() const { check(); need(choice.kind == StorageKind::Local, "当前不是本机存储；不会创建或启用本机副本"); }
     std::filesystem::path codePath() const {
         check(); (void)CloudStorage::identity(choice.nameSpace);
@@ -186,16 +190,19 @@ void Storage::finishDetach() {
 }
 void Storage::finishCloud() { state->save({StorageKind::Cloud, opened->namespaceId(), {}, {}}); attach(); }
 void Storage::initializeCloud(const std::string &nameSpace, const std::wstring &password) {
-    state->cloudSelectable(); need(!opened); (void)CloudStorage::identity(nameSpace); passwordValid(password);
+    state->cloudSelectable(); need(!opened); (void)CloudStorage::identity(nameSpace);
+    state->requireCloudProfile(nameSpace); passwordValid(password);
     state->save({StorageKind::InitializingCloud, nameSpace, {}, randomBytes(32)});
     opened = Vault::seedCloud(nameSpace, password, state->launchFor(nameSpace), nullptr, false, state->choice.creationToken); finishCloud();
 }
 void Storage::selectCloud(const std::string &nameSpace, const std::wstring &password) {
     state->cloudSelectable(); need(!opened);
+    state->requireCloudProfile(nameSpace);
     opened = Vault::openCloud(nameSpace, password, state->launchFor(nameSpace)); finishCloud();
 }
 void Storage::migrateCloud(const std::wstring &password) {
-    state->localOnly(); need(!opened); passwordValid(password); Vault source(state->local);
+    state->localOnly(); need(!opened); Vault source(state->local);
+    state->requireCloudProfile(source.namespaceId()); passwordValid(password);
     state->save({StorageKind::MovingToCloud, source.namespaceId(), source.savedDigest, randomBytes(32)});
     opened = Vault::seedCloud(state->choice.nameSpace, password, state->launchFor(state->choice.nameSpace), &source, false, state->choice.creationToken); finishCloud();
 }

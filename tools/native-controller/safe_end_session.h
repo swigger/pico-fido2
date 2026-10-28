@@ -14,6 +14,7 @@ namespace relay {
 struct SessionSnapshot {
     StorageKind kind = StorageKind::Local;
     std::string nameSpace;
+    std::vector<std::string> cloudProfiles; // Saved local cloud configurations, not remote vaults.
     std::string status = "正在读取存储设置…"; // UTF-8
     bool initialized = false, unlocked = false;
     std::vector<Account> rows;

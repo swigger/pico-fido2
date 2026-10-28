@@ -22,6 +22,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <algorithm>
 
 using namespace relay;
 namespace {
@@ -124,6 +125,8 @@ SafeEndPanel::SafeEndPanel(QWidget *parent, const std::filesystem::path &directo
     row3->addWidget(button(Profile, QStringLiteral("配置云存储")), 0, 0); row3->addWidget(button(NewCloud, QStringLiteral("建立云端库")), 0, 1);
     row3->addWidget(button(ExistingCloud, QStringLiteral("连接已有库")), 0, 2); row3->addWidget(button(Migrate, QStringLiteral("迁移到云端")), 0, 3);
     row3->addWidget(button(Resume, QStringLiteral("恢复未完成操作")), 0, 4);
+    for (auto id : {NewCloud, ExistingCloud, Migrate})
+        buttons[id]->setToolTip(QStringLiteral("请先通过“配置云存储”保存对应凭证库编号的云配置。"));
     layout->addLayout(row3);
 
     auto dir = directory.empty() ? Storage::defaultDirectory() : directory;
@@ -158,14 +161,17 @@ void SafeEndPanel::showState() {
     auto s = session->snapshot(); bool busy = session->visibleBusy(), ready = s.unlocked && !redact, local = s.kind == StorageKind::Local;
     bool unbound = s.kind == StorageKind::Unbound;
     bool pending = s.kind == StorageKind::InitializingCloud || s.kind == StorageKind::MovingToCloud;
+    bool configured = !s.cloudProfiles.empty();
+    bool matchingProfile = std::find(s.cloudProfiles.begin(), s.cloudProfiles.end(), s.nameSpace) != s.cloudProfiles.end();
     if (!session->busy()) serving = false;
     auto enable = [&](Action id, bool value) { buttons[id]->setEnabled(value && !closing); };
     enable(Open, !busy && !ready && s.initialized && !pending); enable(Lock, busy || ready); enable(Refresh, !busy || serving);
     enable(Initialize, !busy && (local || unbound) && !s.initialized); enable(Restore, !busy && (local || unbound) && !s.initialized);
     enable(Backup, !busy && ready); enable(ResetPin, !busy && ready);
     enable(RevokeDevice, true); // Must stay available while the listener owns the vault.
-    enable(Profile, !busy && !ready); enable(NewCloud, !busy && !ready && (local || unbound) && !s.initialized);
-    enable(ExistingCloud, !busy && !ready && (local || unbound) && !s.initialized); enable(Migrate, !busy && !ready && local && s.initialized);
+    enable(Profile, !busy && !ready); enable(NewCloud, !busy && !ready && configured && (local || unbound) && !s.initialized);
+    enable(ExistingCloud, !busy && !ready && configured && (local || unbound) && !s.initialized);
+    enable(Migrate, !busy && !ready && matchingProfile && local && s.initialized);
     enable(Resume, !busy && !ready && pending);
     // The service button also stops what it started. Green starts, red stops; restyle only on change (setStyleSheet repolishes).
     auto serveText = serving ? QStringLiteral("停止中转服务") : QStringLiteral("启动中转服务");
@@ -338,11 +344,17 @@ void SafeEndPanel::startService(const QString &address, uint16_t port) {
 }
 void SafeEndPanel::cloudAction(Action id) {
     auto start = epoch; auto *s = session.get();
-    auto ns = s->snapshot().nameSpace;
+    auto state = s->snapshot(); auto ns = state.nameSpace;
     bool selecting = id == NewCloud || id == ExistingCloud, creating = id == NewCloud || id == Migrate;
     auto secret = std::make_shared<Secret>(); QVector<FormField> fields;
     ClearFields clear{fields};
-    if (selecting) fields.push_back(text(QStringLiteral("凭证库编号"), qs(ns), 32));
+    if (selecting) {
+        need(!state.cloudProfiles.empty(), "请先配置云存储");
+        QVector<QPair<QString, QString>> profiles;
+        for (const auto &name : state.cloudProfiles) profiles.push_back({qs(name), qs(name)});
+        if (std::find(state.cloudProfiles.begin(), state.cloudProfiles.end(), ns) == state.cloudProfiles.end()) ns = state.cloudProfiles.front();
+        fields.push_back(choice(QStringLiteral("凭证库编号"), qs(ns), profiles));
+    }
     if (creating) {
         secret->value = backup::newRecoveryCode();
         fields.push_back(text(QStringLiteral("新库恢复码（请保存）"), qs(backup::displayRecoveryCode(secret->value)), 64, true, true));

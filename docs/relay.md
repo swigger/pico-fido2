@@ -490,7 +490,11 @@ when remembering it on this computer.
 Selection (`backend-v1`) is persistent. A new user starts with local storage.
 "建立云端库" (`--storage-init-cloud NS`) creates a new cloud vault and
 "连接已有库" (`--storage-open-cloud NS`) selects an existing one; both require that
-no local vault exists. `--storage-new-id` prints a fresh namespace for a new vault.
+no local vault exists and cloud configuration has been saved for the target namespace.
+The GUI disables both actions until a saved cloud profile is available, and offers
+only configured namespaces. Migration requires a profile matching the local vault
+ID. Missing configuration is rejected before recording a pending operation.
+`--storage-new-id` prints a fresh namespace for a new vault.
 After selecting cloud there is no automatic switch back. A GUI backup followed
 by confirmed "解除本机绑定" leaves an explicit unbound selection from which a
 new local vault can be initialized, a backup can be restored, or a different

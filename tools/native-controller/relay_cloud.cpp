@@ -333,6 +333,27 @@ Id CloudStorage::identity(const std::string &nameSpace) {
     need(id != Id{}); return id;
 }
 CloudStorage::CloudStorage(const std::string &nameSpace, const CloudLaunch &launch) : state(std::make_unique<Impl>(nameSpace, launch)) {}
+bool CloudStorage::profileConfigured(const std::string &nameSpace, const CloudLaunch &launch) {
+    try {
+        (void)identity(nameSpace);
+        auto path = launch.profile.empty() ? platform::dataDirectory() / "safe-end" / "cloud" /
+            (nameSpace + platform::protectedExtension()) : launch.profile;
+        if (!path.is_absolute() || !std::filesystem::is_regular_file(std::filesystem::symlink_status(path))) return false;
+        return !platform::readFile(path, 256 * 1024, "无法读取云存储配置").empty();
+    } catch (...) { return false; }
+}
+std::vector<std::string> CloudStorage::configuredNamespaces(const std::filesystem::path &directory) {
+    std::vector<std::string> names;
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
+        const auto &path = it->path();
+        if (path.extension() != platform::protectedExtension()) continue;
+        auto name = path.stem().u8string(); CloudLaunch launch; launch.profile = path;
+        if (profileConfigured(name, launch)) names.push_back(std::move(name));
+    }
+    if (error) return {}; // An incomplete listing cannot authorize a cloud action.
+    std::sort(names.begin(), names.end()); return names;
+}
 void CloudStorage::forgetProfile(const std::string &nameSpace, const CloudLaunch &launch) {
     (void)identity(nameSpace);
     auto path = launch.profile.empty() ? platform::dataDirectory() / "safe-end" / "cloud" /
