@@ -399,8 +399,14 @@ class Builder:
             self.linux_libraries.update(self.dependencies(path))
         for path in list(self.linux_libraries.values()) + self.plugins:
             # A Debian package's copyright file includes its upstream licenses.
-            result = run(["dpkg-query", "-S", str(path)], capture=True)
-            package = result.split(": ", 1)[0]
+            # usrmerge can expose /lib files through /usr/lib (or vice versa),
+            # while dpkg records only the original spelling. Match the real file.
+            result = run(["dpkg-query", "-S", "*/" + path.name], capture=True)
+            owners = [line.split(": ", 1)[0] for line in result.splitlines()
+                      if ": " in line and Path(line.split(": ", 1)[1]).resolve() == path.resolve()]
+            if not owners:
+                raise BuildError(f"Cannot identify the system package/license for {path}")
+            package = owners[0]
             copyright_file = Path("/usr/share/doc") / package.split(":")[0] / "copyright"
             if not copyright_file.is_file():
                 raise BuildError(f"Missing copyright file for bundled {path}: {copyright_file}")

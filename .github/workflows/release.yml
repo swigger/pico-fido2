@@ -37,6 +37,8 @@ jobs:
           RELEASE_VERSION: ${{ inputs.tag || github.ref_name }}
         run: |
           . /opt/esp/idf/export.sh
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule foreach --recursive 'git config --global --add safe.directory "$PWD"'
           python build_firmware_and_controller.py --firmware-only --version "$RELEASE_VERSION" --jobs 4
       - uses: actions/upload-artifact@v4
         with:
