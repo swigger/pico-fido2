@@ -251,6 +251,32 @@ void Vault::verifyBackupForDetach(const std::filesystem::path &archive, const st
     Secret current(serialize(identity, generation, records, pins, attestation));
     require(saved.b == current.b, "备份与本次打开的云端库快照不一致；请重新创建备份后再解除绑定");
 }
+void Vault::archiveRetiredLocal(const std::filesystem::path &path) {
+    auto markerPath = lockPath(path);
+    if (!std::filesystem::exists(path) && !std::filesystem::exists(markerPath)) return;
+    const char *error = "无法保留已迁移的本机旧副本；未初始化新库";
+    platform::FileLock marker(markerPath, platform::FileLock::Mode::OpenExisting, error);
+    require(marker.size() == 24, error); auto bytes = marker.read(24);
+    require(std::equal(std::begin(movedMagic), std::end(movedMagic), bytes.begin()),
+        "已有本机凭证库或初始化标记；不会覆盖或自动重置");
+    auto archive = path.parent_path() / ("retired-local-" + hex(bytes.data() + 8, 16)) / path.filename();
+    platform::createPrivateDirectories(archive.parent_path());
+    auto preserve = [&](const std::filesystem::path &destination, const Bytes &data) {
+        if (!std::filesystem::exists(destination)) platform::publishFile(destination, data, false, error);
+        require(read(destination) == data, error);
+    };
+    if (std::filesystem::exists(path)) {
+        preserve(archive, read(path));
+        preserve(lockPath(archive), bytes);
+        platform::removeFileChecked(path, error);
+    } else {
+        // Retry a confirmed switch interrupted after archiving/removing the
+        // data but before removing its retired marker. Never recreate old data.
+        require(!read(archive).empty() && read(lockPath(archive)) == bytes, error);
+    }
+    marker = {};
+    platform::removeFileChecked(markerPath, error);
+}
 void Vault::recoverLocalClear(const std::filesystem::path &path) {
     auto markerPath = lockPath(path);
     if (!std::filesystem::exists(markerPath)) return;

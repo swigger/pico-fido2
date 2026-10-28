@@ -184,6 +184,14 @@ set(INCLUDES ${INCLUDES}
     ${CMAKE_CURRENT_LIST_DIR}/pico-openpgp/src
 )
 if(NOT ESP_PLATFORM)
+    # Certificate upgrades parse and verify the existing device certificate.
+    target_sources(mbedtls PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/mbedtls/library/pk_ecc.c
+        ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/mbedtls/library/pkcs12.c
+        ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/mbedtls/library/pkparse.c
+        ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/mbedtls/library/x509.c
+        ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/mbedtls/library/x509_crt.c
+    )
     target_sources(pico_fido2 PUBLIC ${SOURCES})
     target_include_directories(pico_fido2 PUBLIC ${INCLUDES})
 
@@ -220,7 +228,7 @@ if(NOT ESP_PLATFORM)
                 -Wl,--gc-sections
             )
         endif()
-        target_link_libraries(pico_fido2 PRIVATE pthread m)
+        target_link_libraries(pico_fido2 PRIVATE ${LIBRARIES} pthread m)
     else()
         target_link_libraries(pico_fido2 PRIVATE pico_keys_sdk pico_stdlib pico_multicore hardware_flash hardware_sync hardware_adc pico_unique_id pico_aon_timer tinyusb_device tinyusb_board)
         pico_add_extra_outputs(${CMAKE_PROJECT_NAME})

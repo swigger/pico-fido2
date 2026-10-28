@@ -389,7 +389,7 @@ static void detachTests(const std::filesystem::path &dir, const std::filesystem:
         need(!std::filesystem::exists(launch.profile) && std::filesystem::exists(withSuffix(launch.profile, ".lock")));
         need(read(withSuffix(launch.profile, ".snapshot")) == remote && read(guard) == highWater && !highWater.empty(), "detach changed cloud data or rollback guard");
         need(read(target / local) == localSource && read(withSuffix(target / local, ".lock")) == retainedMarker, "detach deleted or revived retired local data");
-        rejects([&] { storage.open(); }); rejects([&] { storage.initializeLocal(); });
+        rejects([&] { storage.open(); });
         rejects([&] { relay::Vault old(target / local); });
         // Simulate crash after profile removal but before saving Unbound.
     }
@@ -542,7 +542,79 @@ static void detachSessionTests(const std::filesystem::path &dir, const std::file
     auto state = session.snapshot();
     need(state.kind == relay::StorageKind::Unbound && !state.unlocked && !state.initialized && state.nameSpace.empty() && state.rows.empty(), "detach did not publish a switchable empty state");
     need(!std::filesystem::exists(launch.profile) && read(remotePath) == remote, "detach touched newer remote snapshot");
+    need(session.submit([&] { session.storage().initializeLocal(); session.acquire({}); session.publish("local", true); })); idle();
+    state = session.snapshot();
+    need(state.kind == relay::StorageKind::Local && state.initialized && state.unlocked && state.nameSpace != ns && state.rows.empty(),
+         "could not initialize local storage immediately after detach");
+    need(read(remotePath) == remote, "local initialization changed the cloud snapshot");
     session.close();
+    { relay::Storage reopened(target, launch); need(reopened.choice().kind == relay::StorageKind::Local && reopened.open().namespaceId() == state.nameSpace); }
+}
+static void detachedLocalTests(const std::filesystem::path &dir, const std::filesystem::path &executable) {
+    for (bool migrated : {false, true}) for (bool restore : {false, true}) {
+        auto tag = std::string(migrated ? "migrated" : "direct") + (restore ? "-restore" : "-new");
+        auto target = dir / tag, backup = dir / (tag + ".pf2bak");
+        relay::CloudLaunch launch; launch.helper = executable; launch.profile = dir / (tag + "-profile");
+        mode(launch.profile, "normal");
+        std::string identity; Bytes source, marker;
+        {
+            relay::Storage storage(target, launch);
+            if (migrated) {
+                storage.initializeLocal(); identity = storage.localNamespace(); profileMarker(launch.profile, identity);
+                storage.migrateCloud(password); source = read(target / local); marker = read(withSuffix(target / local, ".lock"));
+            } else { identity = ns; profileMarker(launch.profile, identity); storage.initializeCloud(identity, password); }
+            rejects([&] { storage.initializeLocal(); });
+            auto &vault = storage.open(password); healthyReply(authorize(vault, true));
+            vault.exportBackup(backup, password); storage.detachCloudAfterBackup(backup, password);
+            need(storage.choice().kind == relay::StorageKind::Unbound);
+        }
+        auto remote = read(withSuffix(launch.profile, ".snapshot"));
+        auto guard = target / ("cloud-" + identity + ".generation"); auto highWater = read(guard);
+        auto archived = target / ("retired-local-" + identity) / local;
+        if (!migrated && !restore) {
+            // An unexpected live local vault must never be treated as a
+            // retired migration source, even with an unbound selection.
+            relay::Vault::create(target / local); auto unexpected = read(target / local);
+            { relay::Storage storage(target, launch); rejects([&] { storage.initializeLocal(); });
+              need(storage.choice().kind == relay::StorageKind::Unbound && read(target / local) == unexpected); }
+            std::filesystem::remove(target / local); std::filesystem::remove(withSuffix(target / local, ".lock"));
+        }
+        if (migrated && !restore) {
+            platform::createPrivateDirectories(archived.parent_path()); write(archived, {1,2,3});
+            { relay::Storage storage(target, launch); rejects([&] { storage.initializeLocal(); });
+              need(storage.choice().kind == relay::StorageKind::Unbound && read(archived) == Bytes({1,2,3}) && read(target / local) == source); }
+            std::filesystem::remove(archived);
+            {
+                test::BlockReplace blocked(target / local);
+                relay::Storage storage(target, launch); rejects([&] { storage.initializeLocal(); });
+                need(storage.choice().kind == relay::StorageKind::Unbound && read(target / local) == source &&
+                     read(withSuffix(target / local, ".lock")) == marker, "failed archival changed the selected vault");
+            }
+        }
+        if (migrated && restore) {
+            // Crash after the preserved retired copy was written and its old
+            // data removed, but before removing the old retired marker.
+            platform::createPrivateDirectories(archived.parent_path());
+            write(archived, source); write(withSuffix(archived, ".lock"), marker);
+            std::filesystem::remove(target / local);
+        }
+        {
+            relay::Storage restarted(target, launch);
+            rejects([&] { restarted.open(); }); // Never implicitly fall back.
+            if (restore) restarted.restoreLocal(backup, password); else restarted.initializeLocal();
+            need(restarted.choice().kind == relay::StorageKind::Local);
+            auto &vault = restarted.open();
+            need(restore ? vault.namespaceId() == identity && vault.accounts().size() == 1
+                         : vault.namespaceId() != identity && vault.accounts().empty(), "wrong local vault after detach/restart");
+            rejects([&] { restarted.initializeLocal(); }); rejects([&] { restarted.restoreLocal(backup, password); });
+        }
+        need(read(withSuffix(launch.profile, ".snapshot")) == remote && read(guard) == highWater, "local switch changed cloud state");
+        if (migrated) {
+            need(read(archived) == source && read(withSuffix(archived, ".lock")) == marker, "retired source was not preserved");
+            rejects([&] { relay::Vault old(archived); });
+        }
+        { relay::Storage restarted(target, launch); need(restarted.choice().kind == relay::StorageKind::Local); (void)restarted.open(); }
+    }
 }
 static void selectionTests(const std::filesystem::path &dir, const std::filesystem::path &executable) {
     optimisticTests(dir, executable);
@@ -673,11 +745,13 @@ int main(int argc, char **argv) {
         if (args.size() == 2 && args[0] == "--crash-parent") { crashParent(std::filesystem::absolute(std::filesystem::u8path(args[1]))); return 1; }
         if (args.size() == 5 && args[0].rfind("--real-", 0) == 0) return realHelper(args);
         bool codesOnly = args.size() == 1 && args[0] == "--remembered-code-tests";
-        need(args.empty() || codesOnly); auto executable = platform::executablePath();
+        bool detachedLocalOnly = args.size() == 1 && args[0] == "--detached-local-tests";
+        need(args.empty() || codesOnly || detachedLocalOnly); auto executable = platform::executablePath();
         auto random = randomBytes(12); auto dir = std::filesystem::temp_directory_path() / ("pf2-cloud-test-" + hex(random.data(), random.size()));
         std::filesystem::create_directories(dir);
         struct Cleanup { std::filesystem::path p; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(p, ec); } } cleanup{dir};
         if (codesOnly) { rememberedCodeTests(dir, executable); std::cout << "PASS: remembered cloud recovery codes\n"; return 0; }
+        if (detachedLocalOnly) { detachedLocalTests(dir, executable); detachSessionTests(dir, executable); std::cout << "PASS: local initialization and restore after cloud detach/restart\n"; return 0; }
         selectionTests(dir, executable);
         detachTests(dir, executable);
         detachSessionTests(dir, executable);

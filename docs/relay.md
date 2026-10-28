@@ -334,8 +334,12 @@ The cloud vault, etcd state, other profiles, controller identity, device pairing
 backup and any retired migration source are preserved. Non-secret profile lock
 markers remain to avoid splitting OS locks across inodes; generation guards remain
 to prevent rollback if the same vault is reconnected. The unbound state enables
-"配置云存储", "连接已有库" and "建立云端库", but never revives a retained local
-vault. Reconnecting the old vault requires configuring its profile again.
+"初始化本机库", "从备份恢复", "配置云存储", "连接已有库" and "建立云端库".
+Explicitly initializing or restoring local storage persists a local selection;
+it never revives a retired migration source. If one remains, its encrypted file
+and retired marker are preserved in `retired-local-<namespace>/` before creating
+the new local vault. Restarting retains the selection. Reconnecting the old
+cloud vault requires configuring its profile again.
 This is a vault switch, not a cross-provider data migration or a computer wipe.
 See [本机云端绑定与手动清理](local-cleanup.md) for the user workflow and manual
 cleanup before returning a computer.
@@ -489,8 +493,9 @@ Selection (`backend-v1`) is persistent. A new user starts with local storage.
 no local vault exists. `--storage-new-id` prints a fresh namespace for a new vault.
 After selecting cloud there is no automatic switch back. A GUI backup followed
 by confirmed "解除本机绑定" leaves an explicit unbound selection from which a
-different cloud vault can be selected, including when a retired local migration
-source remains on disk.
+new local vault can be initialized, a backup can be restored, or a different
+cloud vault can be selected, including when a retired local migration source
+remains on disk.
 
 ### Migration and resume
 

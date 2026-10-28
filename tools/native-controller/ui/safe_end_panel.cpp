@@ -106,8 +106,8 @@ SafeEndPanel::SafeEndPanel(QWidget *parent, const std::filesystem::path &directo
     layout->addLayout(row1);
     // Restore never overwrites or merges; backup followed by confirmed clearing
     // makes this action available again.
-    buttons[Initialize]->setToolTip(QStringLiteral("仅在本机尚未建立凭证库时可用。"));
-    buttons[Restore]->setToolTip(QStringLiteral("本机库尚未初始化或已清空时可用。已有库请先创建加密备份，再选择清空本机库；恢复不会覆盖或合并已有库。"));
+    buttons[Initialize]->setToolTip(QStringLiteral("本机库尚未初始化、已清空或已解除云端绑定时，可建立新的本机库。"));
+    buttons[Restore]->setToolTip(QStringLiteral("本机库尚未初始化、已清空或已解除云端绑定时可用。恢复不会覆盖或合并已有库。"));
     layout->addWidget(new QLabel(QStringLiteral("安全端保存的网站与账号"), this));
     table = new QTableWidget(0, 3, this);
     table->setHorizontalHeaderLabels({QStringLiteral("网站"), QStringLiteral("账号"), QStringLiteral("显示名称")});
@@ -116,7 +116,7 @@ SafeEndPanel::SafeEndPanel(QWidget *parent, const std::filesystem::path &directo
     layout->addWidget(table, 1);
     auto *row2 = new QGridLayout();
     row2->addWidget(button(Backup, QStringLiteral("创建加密备份")), 0, 0); row2->addWidget(button(ResetPin, QStringLiteral("重置设备中转 PIN")), 0, 1);
-    buttons[Backup]->setToolTip(QStringLiteral("成功保存并校验备份后，本机库可选择清空；云端库可选择解除本机绑定，再配置并连接其他云端库。"));
+    buttons[Backup]->setToolTip(QStringLiteral("成功保存并校验备份后，本机库可选择清空；云端库可选择解除本机绑定，再初始化本机库、从备份恢复或连接云端库。"));
     row2->addWidget(button(RevokeDevice, QStringLiteral("撤销丢失设备")), 0, 2);
     layout->addLayout(row2);
     layout->addWidget(new QLabel(QStringLiteral("云存储"), this));
@@ -161,7 +161,7 @@ void SafeEndPanel::showState() {
     if (!session->busy()) serving = false;
     auto enable = [&](Action id, bool value) { buttons[id]->setEnabled(value && !closing); };
     enable(Open, !busy && !ready && s.initialized && !pending); enable(Lock, busy || ready); enable(Refresh, !busy || serving);
-    enable(Initialize, !busy && local && !s.initialized); enable(Restore, !busy && local && !s.initialized);
+    enable(Initialize, !busy && (local || unbound) && !s.initialized); enable(Restore, !busy && (local || unbound) && !s.initialized);
     enable(Backup, !busy && ready); enable(ResetPin, !busy && ready);
     enable(RevokeDevice, true); // Must stay available while the listener owns the vault.
     enable(Profile, !busy && !ready); enable(NewCloud, !busy && !ready && (local || unbound) && !s.initialized);

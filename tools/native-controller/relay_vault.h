@@ -72,6 +72,8 @@ private:
                               const std::function<bool()> &canceled);
     void verifyBackupForDetach(const std::filesystem::path &backup, const std::wstring &password);
     static void recoverLocalClear(const std::filesystem::path &path);
+    // Called only when explicitly selecting local storage after cloud detach.
+    static void archiveRetiredLocal(const std::filesystem::path &path);
     static std::unique_ptr<Vault> seedCloud(const std::string &nameSpace, const std::wstring &password,
                                           const CloudLaunch &launch, Vault *source, bool resume, const Bytes &creationToken = {});
     std::function<void()> backendCheck;

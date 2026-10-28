@@ -103,7 +103,7 @@ void SafeEndSession::exportBackup(const std::filesystem::path &path, const std::
         EnrollmentQuestion q; q.kind = DetachCloudAfterBackupQuestion; q.value = path.u8string();
         q.message = "解除后会删除当前库在本机保存的恢复码、云授权和协调服务器连接配置，并关闭此库。\n"
                     "云端凭证库、其他客户端、其他库配置和本机设备配对均保留。"
-                    "您可以重新配置并连接同一份或另一份云端库。\n"
+                    "您可以初始化新的本机库、从备份恢复，或重新连接云端库。\n"
                     "这不会迁移云端数据，也不会清除此软件的全部本机数据。请妥善保管备份及密码。";
         auto answer = ask(q);
         if (answer != "detach") { publish("加密备份已创建，云端绑定已保留。"); return; }
@@ -113,7 +113,7 @@ void SafeEndSession::exportBackup(const std::filesystem::path &path, const std::
         // later fails. Do not retain a dangling UI/session pointer on that path.
         opened = nullptr;
         storage().detachCloudAfterBackup(path, password, [this] { return canceled(); });
-        readState(); publish("加密备份已保存，当前云端库的本机绑定已解除。请配置并连接需要使用的云端库。", true);
+        readState(); publish("加密备份已保存，云端绑定已解除。现在可以初始化本机库、从备份恢复或连接云端库。", true);
         return;
     }
     EnrollmentQuestion q; q.kind = ClearLocalAfterBackupQuestion; q.value = path.u8string();

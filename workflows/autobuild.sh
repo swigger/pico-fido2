@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 git submodule update --init --recursive
 sudo apt update
 

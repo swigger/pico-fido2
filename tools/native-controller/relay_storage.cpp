@@ -138,12 +138,23 @@ Vault &Storage::open(const std::wstring &password) {
     state->check(); if (opened) { opened->check(); return *opened; }
     if (state->choice.kind == StorageKind::Local) opened = std::make_unique<Vault>(state->local);
     else if (state->choice.kind == StorageKind::Cloud) opened = Vault::openCloud(state->choice.nameSpace, password, state->launchFor(state->choice.nameSpace));
-    else if (state->choice.kind == StorageKind::Unbound) throw std::runtime_error("已解除本机云端绑定；请配置并连接另一份云端库");
+    else if (state->choice.kind == StorageKind::Unbound) throw std::runtime_error("已解除本机云端绑定；请初始化本机库、从备份恢复或连接云端库");
     else throw std::runtime_error("云端初始化或迁移尚未完成；请显式恢复该操作，不会打开旧副本");
     attach(); return *opened;
 }
-void Storage::initializeLocal() { state->localOnly(); need(!opened); Vault::create(state->local); }
-void Storage::restoreLocal(const std::filesystem::path &archive, const std::wstring &password) { state->localOnly(); need(!opened); Vault::restoreBackup(archive, password, state->local); }
+void Storage::prepareLocal() {
+    state->check(); need(!opened);
+    if (state->choice.kind == StorageKind::Unbound) {
+        Vault::archiveRetiredLocal(state->local);
+        state->emptyLocal();
+        // Persist the explicit selection before creating an initialization
+        // marker. Interrupted initialization retains the normal no-reset guard.
+        state->save({StorageKind::Local, {}, {}, {}});
+    }
+    state->localOnly();
+}
+void Storage::initializeLocal() { prepareLocal(); Vault::create(state->local); }
+void Storage::restoreLocal(const std::filesystem::path &archive, const std::wstring &password) { prepareLocal(); Vault::restoreBackup(archive, password, state->local); }
 void Storage::clearLocalAfterBackup(const std::filesystem::path &archive, const std::wstring &password,
                                    const std::function<bool()> &canceled) {
     state->localOnly(); need(opened != nullptr, "请先打开本机凭证库");

@@ -1,5 +1,6 @@
 #include "approval.h"
 #include "cli.h"
+#include "controller_instance.h"
 #include "main_window.h"
 #include "relay_server.h"
 #include "relay_settings.h"
@@ -70,12 +71,21 @@ int main(int argc, char **argv) {
     std::vector<std::string> args; std::string serial;
     bool valid = true;
     try { args = commandLine(argc, argv); valid = splitDevice(args, serial); } catch (...) { valid = false; }
+    unsigned instanceWaitMs = 0;
+#ifdef _WIN32
+    // Only the successful UAC handoff waits for the previous GUI to finish.
+    // It still has to acquire the same lock; this flag never bypasses it.
+    if (valid && args.size() == 2 && args[0] == "--accounts" && args[1] == "--restart-elevated" && platform::isElevated()) {
+        args.pop_back(); instanceWaitMs = 30000;
+    }
+#endif
     if (!valid || !isGuiCommand(args)) {
 #ifdef _WIN32
         attachConsole();
 #endif
         try {
             if (!valid) throw std::runtime_error("--device requires one 16-digit hexadecimal serial");
+            auto instance = acquireControllerInstance(args);
             return runCli(args, serial);
         } catch (const std::exception &e) { std::fprintf(stderr, "ERROR: %s\n", e.what()); return 1; }
     }
@@ -83,13 +93,15 @@ int main(int argc, char **argv) {
     QApplication::setAttribute(Qt::AA_DisableWindowContextHelpButton);
     QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
 #endif
+    platform::FileLock instance; // Outlives QApplication and every GUI worker.
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Pico FIDO Controller"));
     QApplication::setOrganizationName(QStringLiteral("PicoFido2Remote"));
     QApplication::setQuitOnLastWindowClosed(true);
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/app.png")));
-    (void)SessionMonitor::instance();
     try {
+        instance = acquireControllerInstance(args, {}, instanceWaitMs);
+        (void)SessionMonitor::instance();
         if (!args.empty() && args[0] == "--serve") {
 #ifdef _WIN32
             attachConsole();

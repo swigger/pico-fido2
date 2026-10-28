@@ -26,6 +26,20 @@ Both share ControllerCore: portable C++17, Mbed TLS 3.6.7 and hidapi 0.15.0
 FETCHCONTENT_SOURCE_DIR_RELAY_MBEDTLS / _RELAY_HIDAPI for offline builds).
 Relay design and operation: docs/relay.md.
 
+Single instance: GUI modes (main window, --accounts, --safe-end and --serve)
+and CLI operations that modify data, wait for input or flash firmware share one
+OS lock in the per-user data directory, including copies of the executable.
+Close the running controller before starting another such operation. Normal
+exit or a crash releases the lock; the empty controller-instance.lock file stays
+and must not be deleted while a controller is running. Windows account queries
+restart the current GUI as administrator after UAC approval; canceling UAC keeps
+the current window.
+Bounded CLI exceptions: --storage-new-id, --self-test, --list-devices,
+--download-ports, --status, --relay-status, --storage-status, --relay-enrollments
+and --relay-revoke SERIAL (lost-device revocation must work during service).
+Development builds also allow --device-diagnostics. These operations retain
+their existing storage/device checks; GUI commands never bypass the lock.
+
 Prerequisites
 -------------
 Windows 10/11:

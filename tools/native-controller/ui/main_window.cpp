@@ -9,6 +9,7 @@
 #include "widgets.h"
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -200,10 +201,10 @@ void MainWindow::refresh() {
     bool elevate = platform::fidoAccessRequiresElevation() && !platform::isElevated();
     bool relay = relayMode();
     accountHint->setText(relay ? QStringLiteral("此设备工作于中转模式，账号保存在安全端，请在“中转模式服务”中查看。") :
-        elevate ? QStringLiteral("Windows 读取安全密钥需要管理员权限，点击下方按钮后继续。")
+        elevate ? QStringLiteral("Windows 读取安全密钥需要管理员权限；继续会关闭当前窗口并以管理员身份重新启动 Controller。")
                 : QString());
     accountHint->setVisible(relay || elevate);
-    unlockButton->setText(elevate ? QStringLiteral("以管理员身份打开账号列表") : accountJob ? QStringLiteral("正在读取…") :
+    unlockButton->setText(elevate ? QStringLiteral("以管理员身份重启并查询") : accountJob ? QStringLiteral("正在读取…") :
         accountsUnlocked ? QStringLiteral("重新验证并刷新") : QStringLiteral("输入 FIDO PIN 并读取"));
     unlockButton->setEnabled(!accountJob && device && !relay && !busy && !writing);
     keyLabel->setText(key ? hexFingerprint(key->id().data()) : QStringLiteral("尚未生成本机密钥"));
@@ -386,10 +387,14 @@ void MainWindow::unlockAccounts() {
 #ifdef _WIN32
     if (platform::fidoAccessRequiresElevation() && !platform::isElevated()) {
         auto path = platform::executablePath();
-        auto args = L"--accounts --device " + widen(device->serial);
+        auto args = L"--accounts --restart-elevated --device " + widen(device->serial);
         auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(reinterpret_cast<HWND>(winId()), L"runas", path.c_str(), args.c_str(), nullptr, SW_SHOWNORMAL));
-        setStatus(result <= 32 ? QStringLiteral("未打开管理员窗口，请允许 Windows 权限提示后重试。")
-                               : QStringLiteral("请在新打开的管理员窗口中输入 FIDO PIN。"));
+        if (result <= 32) setStatus(QStringLiteral("未切换到管理员窗口，请允许 Windows 权限提示后重试。"));
+        else {
+            // The elevated process waits for our OS lock. Stop services and
+            // release all windows before it can touch storage or devices.
+            close(); QCoreApplication::quit();
+        }
         return;
     }
 #endif

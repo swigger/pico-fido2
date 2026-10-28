@@ -69,7 +69,7 @@ site/account query is possible. Lost relay devices can be revoked at the safe en
 - [User guide (Chinese)](ESP32-FIDO2使用说明.txt).
 
 The **网站与账号** tab lists the discoverable credentials on a connected key after
-verifying its FIDO PIN (on Windows via an elevated instance the GUI offers to open).
+verifying its FIDO PIN (on Windows the GUI offers to restart the controller as administrator).
 On ESP32, `LED_ACTIVITY_ONLY` defaults to on and eFuse provisioning to off
 (`ENABLE_ESP_EFUSE_KEYS=OFF`); preserve the NVS and credential partitions when updating.
 

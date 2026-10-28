@@ -26,6 +26,8 @@ public:
     std::wstring rememberedCloudCode() const;
     void rememberCloudCode(const std::wstring &code);
     void forgetCloudCode();
+    // Explicitly selects local storage after cloud detach; never revives a
+    // retired migration source or overwrites an existing local vault.
     void initializeLocal();
     void restoreLocal(const std::filesystem::path &archive, const std::wstring &password);
     // Explicit confirmation belongs to the caller. Requires an opened local
@@ -46,6 +48,7 @@ private:
     std::unique_ptr<State> state;
     std::unique_ptr<Vault> opened;
     void attach();
+    void prepareLocal();
     void finishCloud();
     void finishDetach();
 };
