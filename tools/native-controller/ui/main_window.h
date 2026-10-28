@@ -63,7 +63,7 @@ private:
     QListWidget *trusted = nullptr;
     DeviceSettingsPanel *settings = nullptr;
     QLabel *accountHint = nullptr;
-    QPushButton *unlockButton = nullptr, *lockButton = nullptr;
+    QPushButton *unlockButton = nullptr;
     QTableWidget *accountTable = nullptr;
     SafeEndPanel *safeEnd = nullptr;
     QPointer<ApprovalDialog> popup;

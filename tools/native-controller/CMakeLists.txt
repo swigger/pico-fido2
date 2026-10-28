@@ -123,6 +123,8 @@ if(PICO_CONTROLLER_GUI)
     else()
         set(notice_dir "$<TARGET_FILE_DIR:Esp32KeyConfirm>")
     endif()
+    add_custom_command(TARGET Esp32KeyConfirm POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${notice_dir}/LICENSES")
     # The merged firmware image (esp32s3supermini-*.bin from the ESP-IDF build)
     # that 刷写新设备 offers by default; without it the user picks a file.
     set(PICO_FIRMWARE_IMAGE "" CACHE FILEPATH "Merged ESP32-S3 image to ship with the controller")
@@ -136,7 +138,7 @@ if(PICO_CONTROLLER_GUI)
         list(GET pair 0 from)
         list(GET pair 1 to)
         add_custom_command(TARGET Esp32KeyConfirm POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${from}" "${notice_dir}/${to}")
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${from}" "${notice_dir}/LICENSES/${to}")
     endforeach()
 endif()
 

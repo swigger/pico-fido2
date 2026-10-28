@@ -28,7 +28,6 @@
 #endif
 
 namespace {
-const QString lockedText = QStringLiteral("列表已锁定。输入此安全密钥的 FIDO PIN 后读取。");
 QLabel *wrapped(const QString &text, QWidget *parent) {
     auto *label = new QLabel(text, parent); label->setWordWrap(true); label->setTextFormat(Qt::PlainText); return label;
 }
@@ -142,8 +141,8 @@ void MainWindow::buildAccountsTab(QWidget *page) {
     accountHint = wrapped(QString(), page);
     layout->addWidget(accountHint);
     auto *buttons = new QHBoxLayout();
-    unlockButton = new QPushButton(page); lockButton = new QPushButton(QStringLiteral("锁定列表"), page);
-    buttons->addWidget(unlockButton); buttons->addWidget(lockButton); buttons->addStretch(1);
+    unlockButton = new QPushButton(page);
+    buttons->addWidget(unlockButton); buttons->addStretch(1);
     layout->addLayout(buttons);
     accountTable = new QTableWidget(0, 4, page);
     accountTable->setHorizontalHeaderLabels({QStringLiteral("网站"), QStringLiteral("账号"), QStringLiteral("显示名称"), QStringLiteral("用户 ID")});
@@ -155,7 +154,6 @@ void MainWindow::buildAccountsTab(QWidget *page) {
     layout->addWidget(wrapped(QStringLiteral("只列出密钥内存储的通行密钥。账号名由网站提供；未提供名称时，可用用户 ID 区分。\n"
         "列表仅在本窗口显示 · 切换页签、最小化、锁屏、拔出设备或 5 分钟后自动锁定"), page));
     connect(unlockButton, &QPushButton::clicked, this, &MainWindow::unlockAccounts);
-    connect(lockButton, &QPushButton::clicked, this, [this] { lockAccounts(); refresh(); });
 }
 bool MainWindow::idle() const {
     return !modal && !ownPair && !pairState.active() && !accountJob && !request.pending && !settings->awaiting();
@@ -203,11 +201,11 @@ void MainWindow::refresh() {
     bool relay = relayMode();
     accountHint->setText(relay ? QStringLiteral("此设备工作于中转模式，账号保存在安全端，请在“中转模式服务”中查看。") :
         elevate ? QStringLiteral("Windows 读取安全密钥需要管理员权限，点击下方按钮后继续。")
-                : QStringLiteral("使用与 iPhone / 电脑验证时相同的 FIDO PIN 解锁。") + (accountsUnlocked ? QString() : QStringLiteral("\n") + lockedText));
+                : QString());
+    accountHint->setVisible(relay || elevate);
     unlockButton->setText(elevate ? QStringLiteral("以管理员身份打开账号列表") : accountJob ? QStringLiteral("正在读取…") :
         accountsUnlocked ? QStringLiteral("重新验证并刷新") : QStringLiteral("输入 FIDO PIN 并读取"));
     unlockButton->setEnabled(!accountJob && device && !relay && !busy && !writing);
-    lockButton->setEnabled(accountJob || accountsUnlocked);
     keyLabel->setText(key ? hexFingerprint(key->id().data()) : QStringLiteral("尚未生成本机密钥"));
     std::array<Id, 4> next{}; int count = 0;
     for (auto id : pairState.ids)
