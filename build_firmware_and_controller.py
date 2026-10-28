@@ -31,7 +31,7 @@ class BuildError(Exception):
     pass
 
 
-def run(command, *, cwd=ROOT, env=None, capture=False):
+def run(command, *, cwd=ROOT, env=None, capture=False, ok_codes=(0,)):
     command = [str(x) for x in command]
     print("+ " + subprocess.list2cmdline(command), flush=True)
     try:
@@ -40,7 +40,7 @@ def run(command, *, cwd=ROOT, env=None, capture=False):
                                 stderr=subprocess.STDOUT if capture else None)
     except OSError as exc:
         raise BuildError(str(exc)) from exc
-    if result.returncode:
+    if result.returncode not in ok_codes:
         raise BuildError(f"Command failed ({result.returncode}): {subprocess.list2cmdline(command)}\n"
                          + (result.stdout or "See output above."))
     return (result.stdout or "").strip()
@@ -229,6 +229,11 @@ class Builder:
             # macdeployqt prints usage but returns 1 for -help.
             if HOST == "Windows":
                 run([self.deploy, "--help"], capture=True)
+            else:
+                usage = run([self.deploy, "-help"], capture=True, ok_codes=(0, 1))
+                if "-always-overwrite" not in usage:
+                    raise BuildError(f"Cannot run macdeployqt: {usage}")
+                self.mac_deploy_options = ["-no-codesign"] if "-no-codesign" in usage else []
         plugin = {"Linux": "libqxcb.so", "Darwin": "libqcocoa.dylib", "Windows": "qwindows.dll"}[HOST]
         if not (Path(self.qt["QT_INSTALL_PLUGINS"]) / "platforms" / plugin).is_file():
             raise BuildError(f"Missing Qt platform plugin {plugin}; install the full desktop kit.")
@@ -550,7 +555,7 @@ class Builder:
             if HOST == "Windows":
                 run([self.deploy, "--release", "--no-translations", "--compiler-runtime", binaries / "Esp32KeyConfirm.exe"], env=self.env)
             elif HOST == "Darwin":
-                run([self.deploy, stage / APP, "-always-overwrite", "-no-codesign",
+                run([self.deploy, stage / APP, "-always-overwrite", *self.mac_deploy_options,
                      f"-libpath={self.qt['QT_INSTALL_LIBS']}", f"-executable={binaries / 'pico-fido-cli'}"])
                 run(["codesign", "--force", "--deep", "--timestamp=none", "--sign", self.a.codesign_identity, stage / APP])
                 run(["codesign", "--verify", "--deep", "--strict", stage / APP])

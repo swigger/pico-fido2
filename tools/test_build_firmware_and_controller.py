@@ -107,6 +107,22 @@ class BuildTests(unittest.TestCase):
             self.assertEqual((destination / "a/LICENSE").read_text(), "a")
             self.assertEqual((destination / "b/LICENSE").read_text(), "b")
 
+    def test_macdeployqt_options_follow_installed_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            qt = Path(directory)
+            (qt / "bin").mkdir()
+            (qt / "bin/qmake").touch()
+            (qt / "bin/macdeployqt").touch()
+            (qt / "plugins/platforms").mkdir(parents=True)
+            (qt / "plugins/platforms/libqcocoa.dylib").touch()
+            query = f"QT_VERSION:6.8.3\nQT_INSTALL_BINS:{qt / 'bin'}\nQT_INSTALL_PLUGINS:{qt / 'plugins'}"
+            for usage, expected in (("-always-overwrite", []), ("-always-overwrite -no-codesign", ["-no-codesign"])):
+                with patch.object(build, "HOST", "Darwin"), patch.object(build, "EXE", ""), \
+                     patch.object(build, "run", side_effect=[query, usage]):
+                    builder = build.Builder(build.parser().parse_args(["--qt-path", directory]))
+                    builder.check_qt()
+                    self.assertEqual(builder.mac_deploy_options, expected)
+
 
 if __name__ == "__main__":
     unittest.main()
