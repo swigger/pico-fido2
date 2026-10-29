@@ -307,10 +307,13 @@ static void preflightCloudTests(const std::filesystem::path &dir, const std::fil
     need(call(6, V::map({V::integer(1), V::integer(2), V::integer(2), V::integer(3), V::integer(3), own.publicKey(),
         V::integer(4), V::blob(relay::pin::authenticate(2, shared, encrypted)), V::integer(5), V::blob(encrypted)})) == Bytes{0});
     auto pinHash = hash(Bytes{'t','e','s','t','-','p','i','n'}); pinHash.resize(16);
-    auto preflight = [&] {
+    auto issueToken = [&] {
         auto issued = decode(call(6, V::map({V::integer(1), V::integer(2), V::integer(2), V::integer(9), V::integer(3), own.publicKey(),
             V::integer(6), V::blob(relay::pin::encrypt(2, shared, pinHash)), V::integer(9), V::integer(2), V::integer(10), V::string("cloud.invalid")})));
-        auto token = relay::pin::decrypt(2, shared, issued.at(2).bytes);
+        return relay::pin::decrypt(2, shared, issued.at(2).bytes);
+    };
+    auto preflight = [&] {
+        auto token = issueToken();
         V up; up.type = V::Boolean; up.number = 0;
         auto params = V::map({V::integer(1), V::string("cloud.invalid"), V::integer(2), V::blob(Bytes(32, 0x44)),
             V::integer(5), V::map({V::string("up"), up}), V::integer(6), V::blob(relay::pin::authenticate(2, token, Bytes(32, 0x44))),
@@ -323,23 +326,43 @@ static void preflightCloudTests(const std::filesystem::path &dir, const std::fil
     need(approvals == before && vault->accounts().at(0).counter == 3, "preflight lost concurrent counter or requested extra consent");
     // Edit only the synthetic encrypted fixture to model another client's
     // identity/key update, including updates that retain the credential ID.
-    for (auto field : {4, 6, 1}) {
-        formal = preflight(); before = approvals;
+    auto changeRecord = [&](int field, V value) {
         auto snapshot = withSuffix(launch.profile, ".snapshot"); auto stored = read(snapshot);
         auto plain = relay::backup::decrypt(Bytes(stored.begin() + 8, stored.end()), password);
         need(get(plain, 32, 4) == 1); auto length = static_cast<size_t>(get(plain, 36, 4));
         auto record = ctap::decode(Bytes(plain.begin() + 40, plain.begin() + 40 + length));
         for (size_t i = 0; i < record.items.size(); i += 2) if (record.items[i].number == field)
-            record.items[i + 1] = field == 4 ? V::string("changed-account") : V::blob(field == 6 ? Key::generate()->blob() : randomBytes(32));
+            record.items[i + 1] = value;
         auto encoded = ctap::encode(record); Bytes updated(plain.begin(), plain.begin() + 40);
         put(updated, 24, get(plain, 24, 8) + 1, 8); put(updated, 36, encoded.size(), 4);
         updated.insert(updated.end(), encoded.begin(), encoded.end());
         updated.insert(updated.end(), plain.begin() + 40 + length, plain.end());
         auto cipher = relay::backup::encrypt(updated, password); Bytes next(8); put(next, 0, get(stored, 0, 8) + 1, 8);
         next.insert(next.end(), cipher.begin(), cipher.end()); write(snapshot, next);
+    };
+    for (auto field : {4, 6, 1}) {
+        formal = preflight(); before = approvals;
+        changeRecord(field, field == 4 ? V::string("changed-account") : V::blob(field == 6 ? Key::generate()->blob() : randomBytes(32)));
         allow = false;
         need(call(2, formal) == Bytes{0x27} && approvals == before + 1, "cloud account/key change reused preflight consent");
         need(call(2, formal) == Bytes{0x33}, "denied changed account retained token"); allow = true;
+    }
+    {
+        auto token = issueToken(); V up; up.type = V::Boolean; up.number = 0;
+        auto identifier = randomBytes(32);
+        V list; list.type = V::Array; list.items.push_back(V::map({V::string("type"), V::string("public-key"), V::string("id"), V::blob(identifier)}));
+        auto query = V::map({V::integer(1), V::string("cloud.invalid"), V::integer(2), V::blob(Bytes(32, 0x55)),
+            V::integer(3), list, V::integer(5), V::map({V::string("up"), up}),
+            V::integer(6), V::blob(relay::pin::authenticate(2, token, Bytes(32, 0x55))), V::integer(7), V::integer(2)});
+        before = approvals;
+        need(call(2, query) == Bytes{0x2e} && approvals == before + 1, "first negative batch did not require approval");
+        allow = false;
+        need(call(2, query) == Bytes{0x2e} && approvals == before + 1, "matching negative batch requested approval again");
+        // Model an account becoming a match during the batch window.
+        // Reload the cloud vault before deciding whether consent can be reused.
+        changeRecord(1, V::blob(identifier));
+        need(call(2, query) == Bytes{0x27} && approvals == before + 2, "new cloud account inherited negative batch consent");
+        allow = true;
     }
     formal = preflight(); before = approvals;
     need(writer->resetDevicePin(operation().deviceSerial));

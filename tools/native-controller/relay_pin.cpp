@@ -188,7 +188,8 @@ Bytes PinManager::verify(const Operation &op, unsigned protocol, const Bytes &au
     need(pin::equal(pin::authenticate(protocol, session.token, clientHash), auth), 0x33);
     auto binding = hash(session.token);
     // Formal requests remain single-use, including denied ones. Preflight
-    // failures are invalidated by Authenticator::exchange instead.
+    // failures are invalidated by Authenticator::exchange instead; approved
+    // negative exclude-list results preserve the original token and deadline.
     if (consume) session.revoke();
     return binding;
 }

@@ -107,6 +107,35 @@ int main(int argc, char **argv) {
                 !vault.contains("example.com.evil", "alice@example.com") && !vault.contains("example.com", "alice"), "exact account query");
             rejects([&] { vault.contains("example.com", ""); });
             {
+                unsigned approvals = 0;
+                relay::Authenticator preflight(vault, [&](const auto &, const auto &) { ++approvals; return relay::Decision{}; });
+                const auto before = vault.revision();
+                const std::string appId = "https://www.gstatic.com/securitykey/origins.json";
+                auto silent = [&](const std::string &rp, const Bytes &id) {
+                    auto request = assertion(rp, id);
+                    request.items.push_back(V::integer(5));
+                    request.items.push_back(V::map({V::string("up"), flag(false), V::string("uv"), flag(false)}));
+                    return request;
+                };
+                for (const auto &rp : {appId, std::string("https://example.com")})
+                    for (const auto &id : {credential, Bytes(32, 0xa5)})
+                        check(preflight.exchange(wire(2, silent(rp, id)), operation()) == Bytes{0x2e}, "legacy AppID preflight aborted registration or matched a DNS credential");
+                check(preflight.exchange(wire(2, silent(appId, {})), operation()) == Bytes{2}, "AppID probe without allowList accepted");
+                auto malformed = silent(appId, credential);
+                for (size_t i = 0; i < malformed.items.size(); i += 2)
+                    if (malformed.items[i].number == 3) malformed.items[i + 1] = array({V::string("not a descriptor")});
+                check(preflight.exchange(wire(2, malformed), operation()) == Bytes{0x11}, "malformed AppID allowList accepted");
+                check(preflight.exchange(wire(2, assertion(appId, credential)), operation()) == Bytes{2}, "AppID exception allowed a formal assertion");
+                auto authenticated = silent(appId, credential);
+                authenticated.items.push_back(V::integer(6)); authenticated.items.push_back(V::blob(Bytes(16)));
+                check(preflight.exchange(wire(2, authenticated), operation()) == Bytes{2}, "AppID exception allowed PIN-authenticated assertion");
+                check(preflight.exchange(wire(1, make(appId)), operation()) == Bytes{2}, "AppID exception allowed URL registration");
+                check(approvals == 0 && vault.revision() == before && vault.accounts()[0].counter == 0,
+                    "AppID preflight requested consent or changed credentials");
+                check(preflight.exchange(wire(2, silent("example.com", credential)), operation()) == Bytes{0x27} && approvals == 1,
+                    "DNS preflight bypassed normal consent");
+            }
+            {
                 int queries = 0; relay::Approval scope;
                 relay::Authenticator query(vault, [&](const auto &a, const auto &) { ++queries; scope = a; return relay::Decision{true, {}}; });
                 auto queryRequest = [](const std::string &rp, const std::string &user) {

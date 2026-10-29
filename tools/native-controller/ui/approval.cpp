@@ -51,6 +51,7 @@ ApprovalDialog::ApprovalDialog(const relay::Approval &a, std::chrono::steady_clo
     if (local) add(approval.operation == 1 ? QStringLiteral("请求创建通行密钥。确认网站后批准，也可以直接在设备上按 BOOT。")
                                            : QStringLiteral("请求登录。确认网站后批准，也可以直接在设备上按 BOOT。"));
     else add(pin ? title : query ? QStringLiteral("请求查询下方完整账号是否存在。批准后仅返回是或否。")
+            : approval.batchWindowSeconds ? QStringLiteral("请求检查此网站是否存在匹配的通行密钥。")
             : approval.operation == 1 ? QStringLiteral("请求创建通行密钥。确认网站和账号后批准。") : QStringLiteral("请求登录。请选择本次允许使用的账号。"));
     if (local) {
         // The device does not reveal its local accounts; BOOT or this approval covers the request.
@@ -70,6 +71,9 @@ ApprovalDialog::ApprovalDialog(const relay::Approval &a, std::chrono::steady_clo
         list->setEnabled(approval.operation == 2 && approval.accounts.size() > 1);
         layout->addWidget(list);
     }
+    if (!local && approval.batchWindowSeconds)
+        add(QStringLiteral("确认后 %1 秒内，同一操作的后续无匹配账号查询将自动确认。注册或使用已有账号仍需单独批准。")
+            .arg(approval.batchWindowSeconds));
     remaining = add(QString());
     auto *buttons = new QDialogButtonBox(this);
     approve = buttons->addButton(!local && !pin && !query && approval.accounts.empty() ? QStringLiteral("确认查询") : QStringLiteral("批准本次请求"), QDialogButtonBox::AcceptRole);
@@ -105,7 +109,8 @@ void ApprovalDialog::tick() {
     auto seconds = std::chrono::duration_cast<std::chrono::seconds>(deadline - std::chrono::steady_clock::now()).count();
     if (seconds < 0) { reject(); return; }
     remaining->setText(local ? QStringLiteral("剩余 %1 秒 · 关闭后仍可在设备上按 BOOT 批准").arg(seconds)
-                             : QStringLiteral("剩余 %1 秒 · 此批准仅用于当前请求").arg(seconds));
+                            : approval.batchWindowSeconds ? QStringLiteral("剩余 %1 秒 · 等待确认查询").arg(seconds)
+                            : QStringLiteral("剩余 %1 秒 · 此批准仅用于当前请求").arg(seconds));
 }
 void ApprovalDialog::allow() {
     if (std::chrono::steady_clock::now() >= deadline) { reject(); return; }

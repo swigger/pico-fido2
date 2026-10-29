@@ -111,6 +111,15 @@ Bytes assertionScope(V params) {
     }
     Bytes wire{2}; append(wire, ctap::encode(params)); return hash(wire);
 }
+Bytes batchScope(V params) {
+    // Each batch has different credential descriptors. Everything else,
+    // including the exact options, challenge, extensions and PIN proof, must
+    // match. Device/session/token identity is checked separately.
+    for (size_t i = 0; i < params.items.size(); i += 2) if (params.items[i].number == 3) {
+        params.items.erase(params.items.begin() + i, params.items.begin() + i + 2); break;
+    }
+    Bytes wire{2}; append(wire, ctap::encode(params)); return hash(wire);
+}
 bool sameAccount(const Account &a, const Account &b) {
     // A concurrent counter increment is harmless; identity changes are not.
     return a.credentialId == b.credentialId && a.rp == b.rp && a.userId == b.userId &&
@@ -140,7 +149,7 @@ Bytes Authenticator::exchange(const Bytes &request, const Operation &operation) 
     try {
         live(operation); need(validDeviceSerial(operation.deviceSerial) && operation.requestId != Id{}, 0x02);
         // Public discovery runs between transactions. Any other intervening
-        // command invalidates the one permitted assertion continuation.
+        // command invalidates assertion continuation and batch approval.
         if (request != Bytes{4} && (request.empty() || request[0] != 2)) assertionGrants.erase(serialOf(operation));
         vault.cancellation([&] { return std::chrono::steady_clock::now() >= operation.deadline || (operation.canceled && operation.canceled()); });
         vault.check();
@@ -290,7 +299,22 @@ Bytes Authenticator::perform(const Bytes &request, const Operation &op) {
         need(response.size() <= RELAY_CTAP_MAX, 0x39);
         live(op); next.push_back(std::move(credential)); vault.commit(std::move(next), std::move(attestation)); live(op); return response;
     }
-    approval.rp = rpId(field(params, 1));
+    const auto &requestedRp = field(params, 1);
+    // Chromium's appidExclude preflight sends a legacy U2F AppID URL as the
+    // GetAssertion RP, before obtaining a PIN token. Relay registration accepts
+    // DNS RP IDs only and has no U2F credentials, so this namespace can never
+    // match. Report that fact without consulting accounts or requesting consent;
+    // INVALID_PARAMETER would abort registration before Chrome asks for a PIN.
+    // Keep this exception confined to unauthenticated, explicit-list, silent
+    // probes. Never strip a URL down to its host or relax normal RP validation.
+    if (!wantsUp && !wantsUv && !params.find(6) && !params.find(7) &&
+        requestedRp.type == V::Text && requestedRp.text.rfind("https://", 0) == 0) {
+        (void)text(requestedRp, 9, 1024);
+        need(!descriptors(params.find(3)).empty());
+        assertionGrants.erase(serialOf(op));
+        return {0x2e};
+    }
+    approval.rp = rpId(requestedRp);
     bool verified = verifyPin(approval.rp);
     auto allow = params.find(3); auto ids = descriptors(allow);
     // An explicitly empty list is equivalent to no list; a nonempty list of
@@ -299,22 +323,46 @@ Bytes Authenticator::perform(const Bytes &request, const Operation &op) {
     for (const auto &r : vault.records)
         if (r.rp == approval.rp && (restricted ? includes(ids, r.credentialId) : r.discoverable)) approval.accounts.push_back(r);
     auto scope = assertionScope(params);
+    bool negativeBatch = approval.accounts.empty() && !wantsUp && verified && restricted && !ids.empty();
+    approval.batchWindowSeconds = negativeBatch ? 15 : 0;
+    auto batch = negativeBatch ? batchScope(params) : Bytes{};
+    std::chrono::steady_clock::time_point batchDeadline{};
     Decision decision;
     auto pending = assertionGrants.find(serialOf(op));
     if (pending != assertionGrants.end()) {
         auto grant = std::move(pending->second); assertionGrants.erase(pending);
-        if (wantsUp && verified && grant.boot == op.bootId && grant.enrollment == op.enrollmentId &&
-            grant.requestId != op.requestId && grant.token == tokenBinding && grant.scope == scope) {
-            auto current = std::find_if(vault.records.begin(), vault.records.end(), [&](const auto &r) {
-                return sameAccount(grant.account, r) && grant.keyHash == hash(r.privateKey);
-            });
-            if (current != vault.records.end()) decision = {true, grant.account.credentialId};
+        if (verified && grant.boot == op.bootId && grant.enrollment == op.enrollmentId &&
+            grant.requestId != op.requestId && grant.token == tokenBinding) {
+            if (wantsUp && grant.scope == scope) {
+                auto current = std::find_if(vault.records.begin(), vault.records.end(), [&](const auto &r) {
+                    return sameAccount(grant.account, r) && grant.keyHash == hash(r.privateKey);
+                });
+                if (current != vault.records.end()) decision = {true, grant.account.credentialId};
+            } else if (negativeBatch && grant.batchScope == batch && clock() < grant.batchDeadline) {
+                decision.allow = true; batchDeadline = grant.batchDeadline;
+            }
         }
     }
-    // The approved preflight covers only its exact, single formal assertion.
-    // A mismatch, unverified request or repeated preflight needs new consent.
-    if (!decision.allow) decision = consent();
+    // Account-bearing preflights cover one exact formal assertion. Negative
+    // batches share only their query fingerprint, never account consent.
+    if (!decision.allow) {
+        decision = consent();
+        if (negativeBatch) batchDeadline = clock() + std::chrono::seconds(approval.batchWindowSeconds);
+    }
     revalidatePin(verified);
+    if (negativeBatch) {
+        // An approved, PIN-verified negative exclude-list probe is a normal
+        // result. Chromium reuses this token for subsequent batches and the
+        // final makeCredential. Throwing would revoke it in exchange(). Keep
+        // its original scope/deadline. Reuse approval only for negative batches
+        // with the same fingerprint, without sliding the approval window.
+        // Retain the latest request ID so failed delivery revokes the grant.
+        AssertionGrant marker;
+        marker.boot = op.bootId; marker.enrollment = op.enrollmentId; marker.requestId = op.requestId;
+        marker.token = tokenBinding; marker.batchScope = std::move(batch); marker.batchDeadline = batchDeadline;
+        assertionGrants[serialOf(op)] = std::move(marker);
+        return {0x2e};
+    }
     need(!approval.accounts.empty(), 0x2e); // Even a negative RP lookup requires presence.
     need(std::any_of(approval.accounts.begin(), approval.accounts.end(), [&](const auto &a) { return a.credentialId == decision.credentialId; }), 0x27);
     auto next = vault.records;

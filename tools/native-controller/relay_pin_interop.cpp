@@ -46,6 +46,7 @@ int main(int argc, char **argv) {
         Bytes current; relay::Operation op; auto origin = std::chrono::steady_clock::now();
         relay::Authenticator auth(vault, [&](const relay::Approval &a, const auto &) {
             need(a.deviceSerial == op.deviceSerial && a.requestId == op.requestId && a.requestHash == hash(current));
+            need(!a.batchWindowSeconds || (a.batchWindowSeconds == 15 && a.operation == 2 && a.accounts.empty()));
             need(a.rp.empty() || a.rp == "apple.com" || (a.rp.size() >= 8 && a.rp.substr(a.rp.size() - 8) == ".invalid"));
             if (a.operation == 6) need(a.accounts.empty() && a.pinSubcommand == ctap::decode(Bytes(current.begin() + 1, current.end())).at(2).number);
             if (a.pinSubcommand == 0x80) {

@@ -24,7 +24,8 @@ public:
     bool configured(const std::string &serial) const;
     Bytes exchange(const ctap::Value &params, const Operation &op, const Consent &consent);
     // Return a non-secret identity for this token. Only an approved assertion
-    // preflight may defer consumption until its matching user-present request.
+    // preflight (including a negative exclude-list result) may defer consumption
+    // until a user-present request. This alone never grants approval.
     Bytes verify(const Operation &op, unsigned protocol, const Bytes &auth, const Bytes &clientHash,
                  const std::string &rp, unsigned permission, bool consume = true);
     void invalidate(const Operation &op);

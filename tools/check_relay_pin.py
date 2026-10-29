@@ -444,6 +444,126 @@ def run_preflight(executable, protocol_type):
 
 
 
+def run_exclusion_preflight(executable, protocol_type):
+    with tempfile.TemporaryDirectory(prefix="pf2-pin-interop-") as folder:
+        with Bridge(executable, Path(folder) / "pin-test.dpapi") as device:
+            ctap = Ctap2(device)
+            protocol = protocol_type()
+            client = ClientPin(ctap, protocol)
+            rp, pin = "exclude.invalid", "synthetic-pin-1234"
+            client.set_pin(pin)
+            probe_hash = hashlib.sha256(b"").digest()  # Chromium's silent query.
+            digest = hashlib.sha256(b"registration challenge").digest()
+
+            def token(legacy=False):
+                return client.get_pin_token(pin) if legacy else client.get_pin_token(pin, 3, rp)
+
+            def probe(t, identifier=b"unknown", up=False, challenge=probe_hash, site=rp,
+                      extensions=None, options=None):
+                return ctap.get_assertion(site, challenge,
+                    [{"type": "public-key", "id": identifier}], extensions=extensions,
+                    options={"up": up} if options is None else options,
+                    pin_uv_param=protocol.authenticate(t, challenge), pin_uv_protocol=protocol.VERSION)
+
+            def make(t):
+                return ctap.make_credential(digest, {"id": rp}, {"id": b"user"},
+                    [{"type": "public-key", "alg": -7}], options={"rk": True},
+                    pin_uv_param=protocol.authenticate(t, digest), pin_uv_protocol=protocol.VERSION)
+
+            # Chrome splits a large excludeList into silent assertions, using
+            # the SAME PIN token for every batch and the final registration.
+            for legacy in (False, True):
+                t = token(legacy)
+                before, revision = device.decisions, device.revision
+                for identifier in (b"first missing credential", b"second missing credential"):
+                    error(0x2e, lambda: probe(t, identifier))
+                    assert device.decisions == before + 1 and device.revision == revision
+                    ctap.get_info()
+                before = device.decisions
+                created = make(t)
+                assert device.decisions == before + 1  # No inherited presence.
+                assert created.auth_data.is_user_present() and created.auth_data.is_user_verified()
+                created.auth_data.credential_data.public_key.verify(
+                    bytes(created.auth_data) + digest, created.att_stmt["sig"])
+                error(0x33, lambda: make(t))  # Formal request consumes the token.
+
+            # Batch fingerprints omit only allowList. Changed request fields
+            # must request new approval, even with a valid PIN HMAC.
+            changed = hashlib.sha256(b"different query").digest()
+            for kwargs in ({"challenge": changed}, {"site": "other.invalid"},
+                           {"extensions": {"unknown": True}},
+                           {"options": {"up": False, "uv": False}}):
+                t = token(legacy=True)
+                error(0x2e, lambda: probe(t))
+                before = device.decisions
+                device.mode = 1
+                error(0x27, lambda: probe(t, **kwargs))
+                assert device.decisions == before + 1
+                device.mode = 0
+
+            # A positive result requires account consent; a negative batch
+            # cannot authorize an assertion or the final registration.
+            for operation in (lambda: probe(t, created.auth_data.credential_data.credential_id),
+                              lambda: probe(t, up=True), lambda: make(t)):
+                t = token()
+                error(0x2e, lambda: probe(t))
+                before = device.decisions
+                device.mode = 1
+                error(0x27, operation)
+                assert device.decisions == before + 1
+                device.mode = 0
+
+            # The 15-second window starts at explicit approval. Automatic
+            # batches do not slide it forward; another approval starts anew.
+            t = token()
+            error(0x2e, lambda: probe(t))
+            before = device.decisions
+            device.seconds += 14
+            device.mode = 1
+            error(0x2e, lambda: probe(t, b"within window"))
+            assert device.decisions == before
+            device.seconds += 1
+            error(0x27, lambda: probe(t, b"expired window"))
+            assert device.decisions == before + 1
+            device.mode = 0
+
+            for interruption in ("token", "query"):
+                t = token()
+                error(0x2e, lambda: probe(t))
+                if interruption == "token":
+                    t = token()
+                else:
+                    client.get_pin_retries()
+                before = device.decisions
+                device.mode = 1
+                error(0x27, lambda: probe(t))
+                assert device.decisions == before + 1
+                device.mode = 0
+
+            # A normal negative result is the only exception. Denial, cancel,
+            # failed delivery and user-present negative requests still revoke.
+            for mode, status, up in ((1, 0x27, False), (2, 0x2d, False), (0, 0x2e, True)):
+                t = token()
+                device.mode = mode
+                error(status, lambda: probe(t, up=up))
+                device.mode = 0
+                error(0x33, lambda: make(t))
+            t = token()
+            error(0x2e, lambda: probe(t))
+            error(0x2e, lambda: probe(t, b"automatic batch"))
+            device.control("CANCEL_RESPONSE")
+            error(0x33, lambda: make(t))
+
+            # Negative batches do not renew the original 30-second deadline.
+            t = token()
+            device.seconds += 29
+            error(0x2e, lambda: probe(t))
+            device.seconds += 1
+            error(0x38, lambda: make(t))
+    print(f"PASS: exclusion protocol {protocol.VERSION}: one approval per batch window, request "
+          "fingerprints, separate account/registration consent, cancellation and fixed expiry")
+
+
 def run_attestation(executable):
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes
@@ -501,5 +621,6 @@ if __name__ == "__main__":
     for protocol in (PinProtocolV1, PinProtocolV2):
         run_protocol(executable, protocol)
         run_preflight(executable, protocol)
+        run_exclusion_preflight(executable, protocol)
     failed_write(executable)
     run_attestation(executable)

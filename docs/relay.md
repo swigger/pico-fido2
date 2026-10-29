@@ -241,6 +241,14 @@ lock rejects it. Exclusion-list matches and "no account" results also need
 consent, so sites cannot silently probe. Enrollment and (for cloud vaults)
 ownership are re-checked before and after the dialog and before the result.
 
+Chrome's `appidExclude` compatibility check can send an HTTPS U2F AppID URL in
+a silent `getAssertion` request before registration. Relay mode has no U2F
+credentials and only creates credentials for DNS RP IDs. An unauthenticated
+`up=false`, `uv=false` request with an explicit nonempty credential list in this
+unsupported URL namespace therefore returns `NO_CREDENTIALS` without account
+lookup or approval. It never maps a URL to its hostname. Normal RP queries,
+PIN verification, registration and assertion approval retain their checks.
+
 Windows may send a PIN-verified `getAssertion` preflight (`up=false`) followed by
 the same assertion with `up=true` (or omitted). The preflight still asks for
 consent and returns UP=0. Its approval covers exactly one subsequent formal
@@ -249,6 +257,17 @@ request except `up`, selected account and private key. The formal response has
 UP=1. The latest vault is checked again; account/key changes require new consent.
 Public GetInfo and normal per-command TLS teardown preserve this continuation;
 other commands, failed response delivery and rejected assertions invalidate it.
+
+Chrome also splits long registration exclusion lists into PIN-verified silent
+assertions. The first approved negative result with an explicit nonempty credential
+list opens a 15-second batch approval window. Further negative batches automatically
+reuse that approval only for the same device boot/enrollment, PIN token and request
+fingerprint. The fingerprint excludes only the changing credential list; RP,
+challenge, exact options, extensions and PIN proof must match. Each batch reads the
+latest vault; a matching account requires fresh account consent. Automatic batches
+renew neither the approval window nor the PIN token deadline. The final registration
+needs separate consent and consumes the token. Denial, cancellation, failed response
+delivery and intervening commands other than GetInfo invalidate batch approval.
 
 For `apple.com`, registration returns packed attestation with an `x5c` certificate,
 as standalone mode does. A dedicated attestation key/certificate is created once
@@ -274,7 +293,8 @@ independent of the dormant local PIN on the hardware.
   is automatic, wrong PINs consume retries without operator involvement.
 - Tokens allow only makeCredential/getAssertion for one RP, last at most 30 s and
   are consumed by one formal request (also if it is then denied). A successful
-  `up=false` preflight preserves the token without extending its deadline;
+  `up=false` preflight (including an approved negative exclusion-list result)
+  preserves the token without extending its deadline;
   denied/canceled/failed assertions invalidate it. PIN state is bound to
   serial, per-boot boot ID and the device public key. The verifier is PBKDF2-HMAC-SHA256
   (600,000 iterations, random salt) of the PIN hash.
