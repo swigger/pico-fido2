@@ -10,6 +10,9 @@
 
 namespace relay {
 namespace {
+struct QuestionCanceled : std::runtime_error {
+    QuestionCanceled() : std::runtime_error("操作已取消或无法完成确认") {}
+};
 void need(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
 std::string label(const std::string &value) {
     try { return utf8(ctap::Value::string(value).label()); }
@@ -152,12 +155,17 @@ void SafeEndSession::requestLock() {
     { std::lock_guard<std::mutex> guard(mutex); lockRequested = true; cancel = true; working = true; }
     wake.notify_all();
 }
+bool SafeEndSession::waitToRetry(std::chrono::milliseconds delay) {
+    std::unique_lock<std::mutex> guard(mutex);
+    return !wake.wait_for(guard, delay, [this] { return canceled(); });
+}
 std::string SafeEndSession::ask(const EnrollmentQuestion &value) {
     auto request = std::make_shared<Question>(); request->question = value;
     std::unique_lock<std::mutex> guard(mutex); need(!question && !cancel && !closing, "操作已取消");
     question = request; guard.unlock(); if (notify) notify(); guard.lock();
     while (!request->complete && !cancel && !closing) wake.wait_for(guard, std::chrono::milliseconds(100));
-    question.reset(); need(request->complete && !request->failed && !cancel && !closing, "操作已取消或无法完成确认");
+    question.reset();
+    if (!request->complete || request->failed || cancel || closing) throw QuestionCanceled{};
     return std::move(request->answer);
 }
 bool SafeEndSession::pendingQuestion(EnrollmentQuestion &out) {
@@ -192,19 +200,18 @@ void SafeEndSession::run() {
     release(); finished = true; working = false;
     if (notify) notify();
 }
-void serveRelay(SafeEndSession &s, const std::string &address, uint16_t port, Authenticator::Approve approve,
-                const std::function<void(uint16_t)> &ready) {
-    need(s.vault() != nullptr, "请先打开凭证库");
-    auto controller = Key::load(); need(controller != nullptr, "请先在主窗口生成本机密钥，并与硬件配对");
+namespace {
+void serveOnce(SafeEndSession &s, const Key &controller, const std::string &address, uint16_t port,
+               const Authenticator::Approve &approve, const std::function<void(uint16_t)> &ready) {
+    if (!s.vault()) { s.acquireRemembered(); s.publish("凭证库已打开，正在启动服务…", true); }
     // Keep a UI snapshot between operations. An explicit refresh reacquires
     // the cloud transaction and also sees writes from other clients.
     s.publishRows(false);
     auto listed = s.vault()->revision();
-    Server server(*s.vault(), *controller, [](const std::string &serial) { return relayDeviceKey(serial); },
-        std::move(approve));
+    Server server(*s.vault(), controller, [](const std::string &serial) { return relayDeviceKey(serial); }, approve);
     server.run(address, port, [&] { return s.canceled(); },
         [&](uint16_t actual) {
-            s.publish("服务运行于 " + address + ":" + std::to_string(actual) + "；每个请求都需要单独批准。");
+            s.publish("服务运行于 " + address + ":" + std::to_string(actual) + "；软件运行期间持续服务，锁屏不会停止。");
             if (ready) ready(actual);
         },
         [&](const std::string &) { s.publish("上次连接未完成；服务继续等待已配置设备的请求。"); },
@@ -214,6 +221,36 @@ void serveRelay(SafeEndSession &s, const std::string &address, uint16_t port, Au
             bool refresh = s.takeRowsRequest();
             if (refresh || now != listed) { s.publishRows(refresh); listed = s.vault()->revision(); }
         });
+}
+void maintainRelay(SafeEndSession &s, const std::function<void()> &attempt, std::chrono::milliseconds retryDelay) {
+    while (!s.canceled()) {
+        try { attempt(); }
+        catch (const QuestionCanceled &) { throw; } // Never reopen a prompt the user dismissed.
+        catch (const std::exception &e) {
+            // Retire the entire failed vault/transport and its PIN/approval
+            // state. Retry opens and validates fresh persisted state; it never
+            // retries a credential operation or serves a stale snapshot.
+            s.release();
+            if (s.canceled()) break;
+            try { s.readState(); } catch (...) {}
+            auto seconds = std::chrono::duration_cast<std::chrono::seconds>(retryDelay).count();
+            s.publish("中转服务暂不可用，" + std::to_string(seconds) + " 秒后自动重试：" + label(e.what()));
+            if (!s.waitToRetry(retryDelay)) break;
+        }
+    }
     s.release(); s.publish("服务已停止，凭证库已锁定。");
+}
+}
+void serveRelay(SafeEndSession &s, const std::string &address, uint16_t port, Authenticator::Approve approve,
+                const std::function<void(uint16_t)> &ready) {
+    maintainRelay(s, [&] {
+        auto controller = Key::load(); need(controller != nullptr, "请先在主窗口生成本机密钥，并与硬件配对");
+        serveOnce(s, *controller, address, port, approve, ready);
+    }, std::chrono::seconds(5));
+}
+void serveRelay(SafeEndSession &s, const Key &controller, const std::string &address, uint16_t port,
+                Authenticator::Approve approve, const std::function<void(uint16_t)> &ready,
+                std::chrono::milliseconds retryDelay) {
+    maintainRelay(s, [&] { serveOnce(s, controller, address, port, approve, ready); }, retryDelay);
 }
 }

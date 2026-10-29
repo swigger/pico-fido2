@@ -12,12 +12,15 @@ class QTableWidget;
 // initialization and encrypted backup, cloud profiles and migration, device
 // revocation) and the relay service with per-request approval. Once the service
 // has been started it starts again with the next launch until it is stopped by
-// hand. All storage work runs on the SafeEndSession worker; this panel only
+// hand. Locking the desktop does not stop it; failures are retried until manual
+// stop/exit. All storage work runs on the SafeEndSession worker; this panel only
 // submits jobs and renders snapshots. Status text goes to the main status bar.
 class SafeEndPanel : public QWidget {
     Q_OBJECT
 public:
-    explicit SafeEndPanel(QWidget *parent = nullptr, const std::filesystem::path &directory = {});
+    using ServiceRunner = std::function<void(relay::SafeEndSession &, const std::string &, uint16_t,
+        relay::Authenticator::Approve, const std::function<void(uint16_t)> &)>;
+    explicit SafeEndPanel(QWidget *parent = nullptr, const std::filesystem::path &directory = {}, ServiceRunner runner = {});
     ~SafeEndPanel() override;
     // Cancels any job, stops the service and releases the vault (window close).
     void shutdown();
@@ -28,6 +31,7 @@ private:
     enum Action { Open, Lock, Refresh, Initialize, Restore, Backup, ResetPin, Profile, NewCloud, ExistingCloud, Migrate, Resume,
                   Serve, RevokeDevice };
     std::unique_ptr<relay::SafeEndSession> session;
+    ServiceRunner runService;
     std::map<Action, QPushButton *> buttons;
     QLabel *nameSpace = nullptr;
     QTableWidget *table = nullptr;

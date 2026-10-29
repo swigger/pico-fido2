@@ -1,4 +1,5 @@
 #include "safe_end_session.h"
+#include "relay_tls.h"
 #include <cstdio>
 #include <fstream>
 #include <future>
@@ -15,6 +16,51 @@ void wait(const std::function<bool()> &predicate) {
 bool hasQuestion(SafeEndSession &s, EnrollmentQuestion &q) { return s.pendingQuestion(q); }
 Bytes contents(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::binary); return Bytes(std::istreambuf_iterator<char>(file), {});
+}
+void persistentService(const std::filesystem::path &directory) {
+    { Storage storage(directory); storage.initializeLocal(); }
+    auto controller = Key::generate(); // Synthetic identity, never reads the real controller key.
+    SafeEndSession s(directory, {});
+    wait([&] { return !s.busy(); });
+    auto blocker = std::make_unique<Socket>(Socket::listen("127.0.0.1", 0));
+    const auto port = blocker->port(); std::atomic<unsigned> starts{0};
+    auto begin = [&](std::chrono::milliseconds retry) {
+        need(s.submit([&, retry] {
+            serveRelay(s, *controller, "127.0.0.1", port, {}, [&](uint16_t actual) {
+                need(actual == port, "retry changed listen port"); ++starts;
+            }, retry);
+        }), "service job refused");
+    };
+    auto retrying = [&] {
+        return s.busy() && !s.snapshot().unlocked && s.snapshot().status.find("自动重试") != std::string::npos;
+    };
+    auto handshake = [&] {
+        auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        auto socket = Socket::connect("127.0.0.1", port, until, {});
+        Tls tls(socket, controller->pub()); tls.handshake(until, {});
+    };
+    begin(std::chrono::milliseconds(50)); wait(retrying);
+    need(starts == 0, "occupied port reported a running listener");
+    blocker.reset(); wait([&] { return starts == 1; }); handshake();
+    // A failing ownership check must retire the old listener, then validate
+    // fresh persisted state before bringing the service back automatically.
+    auto selector = directory / ("backend-v1" + platform::protectedExtension());
+    auto original = contents(selector), corrupted = original; corrupted.back() ^= 1;
+    platform::publishFile(selector, corrupted, true, "fixture corruption failed");
+    wait(retrying); need(starts == 1, "invalid storage was served during recovery");
+    platform::publishFile(selector, original, true, "fixture restore failed");
+    wait([&] { return starts == 2; }); handshake();
+    s.requestLock(); wait([&] { return !s.busy() && !s.snapshot().unlocked; });
+    // Manual stop and application exit interrupt a long retry delay immediately.
+    blocker = std::make_unique<Socket>(Socket::listen("127.0.0.1", port));
+    for (bool close : {false, true}) {
+        begin(std::chrono::seconds(30)); wait(retrying);
+        auto start = std::chrono::steady_clock::now();
+        if (close) s.close(); else s.requestLock();
+        wait([&] { return !s.busy() && !s.snapshot().unlocked; });
+        need(std::chrono::steady_clock::now() - start < std::chrono::seconds(1), "stop waited for retry delay");
+        need(starts == 2, "stopped service restarted");
+    }
 }
 void test(const std::filesystem::path &directory) {
     { Storage storage(directory); storage.initializeLocal(); }
@@ -110,7 +156,8 @@ void backupAndClear(const std::filesystem::path &directory) {
 int main() {
     auto directory = std::filesystem::temp_directory_path() / ("pf2-session-test-" + hex(randomBytes(8).data(), 8));
     int result = 0;
-    try { test(directory); backupAndClear(directory / "backup-clear"); std::puts("PASS: safe-end session ownership, questions, cancellation and backup-confirmed clear/restore"); }
+    try { test(directory); backupAndClear(directory / "backup-clear"); persistentService(directory / "persistent-service");
+        std::puts("PASS: safe-end ownership, questions, backup/restore, service recovery and immediate stop during retry"); }
     catch (const std::exception &e) { std::fprintf(stderr, "FAIL: %s\n", e.what()); result = 1; }
     std::error_code ignored; std::filesystem::remove_all(directory, ignored);
     return result;

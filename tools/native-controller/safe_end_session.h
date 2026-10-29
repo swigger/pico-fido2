@@ -40,6 +40,8 @@ public:
     // user operation and must not flicker the panel.
     bool visibleBusy() const { return working.load() && !maintenance.load(); }
     bool canceled() const { return cancel.load() || closing.load(); }
+    // Worker-side retry delay, interrupted immediately by manual stop/close.
+    bool waitToRetry(std::chrono::milliseconds delay);
     CloudLaunch launch() const;
 
     // Accepted while idle or during the quiet ownership/health check; returns
@@ -98,7 +100,12 @@ private:
     void run();
 };
 // Jobs shared by the GUI and tests; each runs on the session worker.
-// Runs the TLS relay service on the opened vault until the session is canceled.
+// Keeps the TLS relay service active until canceled, reopening/revalidating the
+// vault after failures. A declined recovery-code prompt ends the operation.
 void serveRelay(SafeEndSession &session, const std::string &address, uint16_t port, Authenticator::Approve approve,
                 const std::function<void(uint16_t)> &ready = {});
+// Explicit controller identity also permits isolated service lifecycle tests.
+void serveRelay(SafeEndSession &session, const Key &controller, const std::string &address, uint16_t port,
+                Authenticator::Approve approve, const std::function<void(uint16_t)> &ready = {},
+                std::chrono::milliseconds retryDelay = std::chrono::seconds(5));
 }

@@ -1,4 +1,6 @@
 #include "safe_end_panel.h"
+#include "session_monitor.h"
+#include "relay_tls.h"
 #include <QApplication>
 #include <QComboBox>
 #include <QDialog>
@@ -28,6 +30,45 @@ QPushButton *button(SafeEndPanel &panel, const QString &label) {
 void write(const std::filesystem::path &path, const std::string &text) {
     std::ofstream out(path, std::ios::binary); out << text; out.close();
     need(!out.fail(), "cannot prepare helper fixture");
+}
+void persistentService() {
+    QTemporaryDir temporary(QDir::tempPath() + "/pf2-service-panel-XXXXXX");
+    need(temporary.isValid(), "cannot create service test directory");
+    auto dir = std::filesystem::u8path(temporary.path().toUtf8().constData());
+    { relay::Storage storage(dir); storage.initializeLocal(); }
+    auto controller = Key::generate();
+    auto blocker = std::make_unique<relay::Socket>(relay::Socket::listen("127.0.0.1", 0));
+    const auto port = blocker->port();
+    QSettings settings;
+    settings.setValue(QStringLiteral("relay/autoServe"), true);
+    settings.setValue(QStringLiteral("relay/address"), QStringLiteral("127.0.0.1"));
+    settings.setValue(QStringLiteral("relay/port"), port);
+    SafeEndPanel panel(nullptr, dir, [&](auto &s, const auto &address, uint16_t listenPort, auto approve, const auto &ready) {
+        relay::serveRelay(s, *controller, address, listenPort, std::move(approve), ready, std::chrono::milliseconds(50));
+    });
+    panel.show();
+    wait([&] { return panel.lastMessage().contains(QStringLiteral("自动重试")); });
+    SessionMonitor::instance().locked();
+    QApplication::processEvents();
+    need(button(panel, QStringLiteral("停止中转服务"))->isEnabled(), "screen lock stopped service recovery");
+    blocker.reset();
+    wait([&] { return panel.lastMessage().contains(QStringLiteral("服务运行于")); });
+    SessionMonitor::instance().locked();
+    panel.showMinimized(); QApplication::processEvents();
+    // Actual TLS handshake after the lock notification and minimization.
+    auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    auto socket = relay::Socket::connect("127.0.0.1", port, until, {});
+    relay::Tls tls(socket, controller->pub()); tls.handshake(until, {});
+    need(settings.value(QStringLiteral("relay/autoServe")).toBool(), "lock disabled next-launch startup");
+    button(panel, QStringLiteral("停止中转服务"))->click();
+    wait([&] {
+        for (auto *b : panel.findChildren<QPushButton *>())
+            if (b->text() == QStringLiteral("启动中转服务")) return b->isEnabled();
+        return false;
+    });
+    need(!settings.value(QStringLiteral("relay/autoServe")).toBool(), "manual stop did not disable startup");
+    panel.shutdown();
+    settings.clear();
 }
 void cloudConfiguration(bool initialized) {
     QTemporaryDir temporary(QDir::tempPath() + "/pf2-cloud-test-XXXXXX");
@@ -128,6 +169,8 @@ int main(int argc, char **argv) {
     try {
         need(argc == 2, "expected synthetic cloud helper path");
         auto helper = std::filesystem::absolute(std::filesystem::u8path(argv[1]));
+        std::fprintf(stderr, "CASE persistent service across lock and minimization\n");
+        persistentService();
         for (bool initialized : {false, true}) {
             std::fprintf(stderr, "CASE cloud configuration (local initialized=%d)\n", initialized);
             cloudConfiguration(initialized);
@@ -136,7 +179,7 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "CASE detached local (migrated=%d, restart=%d)\n", migrated, restart);
             detachedLocal(helper, migrated, restart);
         }
-        std::puts("PASS: cloud configuration gates and local actions after detach, refresh and restart");
+        std::puts("PASS: persistent service across lock/minimization, cloud configuration and local actions after detach");
     } catch (const std::exception &error) { std::fprintf(stderr, "FAIL: %s\n", error.what()); return 1; }
     return 0;
 }

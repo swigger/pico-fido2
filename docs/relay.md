@@ -209,9 +209,16 @@ listener by itself. Typical order:
 
 Firewall rules and trust stores are never changed; reachability (LAN/WAN/VPN) is
 an installation task. The listener handles one connection at a time and holds the
-vault until stopped. "停止并锁定", closing the manager, or an OS session lock
-(WTS on Windows, `com.apple.screenIsLocked` on macOS, ScreenSaver/logind D-Bus on
-Linux with Qt DBus) stops it, cancels pending approvals and releases the vault.
+vault until stopped. After starting the service, it remains enabled while the
+manager is open and starts again on the next launch. Desktop lock, minimization
+and idle time do not stop it. An OS session lock still cancels pending approval
+dialogs. Listener/vault failures release the old session and retry every five
+seconds, reopening and validating persisted state before serving again; credential
+operations are never replayed. Recovery-code prompts still require an answer and
+canceling one ends that start attempt. "停止中转服务", "停止并锁定" or exiting the
+manager cancels retries, stops the listener and releases the vault. Manual stop
+also disables automatic startup. A sleeping computer cannot serve requests until
+the OS resumes it.
 
 Nothing about the server identity is stored or renewed: the TLS key exists only
 in memory for one service run. Changing the safe end's address needs only a new

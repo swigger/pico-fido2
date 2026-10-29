@@ -92,7 +92,9 @@ QString prose(const std::string &value) {
 }
 }
 
-SafeEndPanel::SafeEndPanel(QWidget *parent, const std::filesystem::path &directory) : QWidget(parent) {
+SafeEndPanel::SafeEndPanel(QWidget *parent, const std::filesystem::path &directory, ServiceRunner runner)
+    : QWidget(parent), runService(runner ? std::move(runner) : ServiceRunner([](auto &s, const auto &address,
+          uint16_t port, auto approve, const auto &ready) { serveRelay(s, address, port, std::move(approve), ready); })) {
     auto *layout = new QVBoxLayout(this);
     nameSpace = new QLabel(this); nameSpace->setTextInteractionFlags(Qt::TextSelectableByMouse); layout->addWidget(nameSpace);
     auto button = [&](Action id, const QString &label) { auto *b = new QPushButton(label, this); buttons[id] = b;
@@ -131,7 +133,9 @@ SafeEndPanel::SafeEndPanel(QWidget *parent, const std::filesystem::path &directo
 
     auto dir = directory.empty() ? Storage::defaultDirectory() : directory;
     session = std::make_unique<SafeEndSession>(dir, [this] { QMetaObject::invokeMethod(this, [this] { changed(); }, Qt::QueuedConnection); });
-    connect(&SessionMonitor::instance(), &SessionMonitor::locked, this, [this] { lock(); });
+    // A running service belongs to the application lifetime, not the desktop
+    // lock state. ApprovalDialog still rejects pending approvals on lock.
+    connect(&SessionMonitor::instance(), &SessionMonitor::locked, this, [this] { if (!serving) lock(); });
     auto *timer = new QTimer(this); connect(timer, &QTimer::timeout, this, &SafeEndPanel::changed); timer->start(250);
     showState();
 }
@@ -186,7 +190,7 @@ void SafeEndPanel::showState() {
     shown = s.version; shownBusy = busy; shownRedact = redact;
     auto kind = unbound ? QStringLiteral("尚未绑定云端库") : local ? QStringLiteral("本机存储") : pending ? QStringLiteral("云端操作待恢复") : QStringLiteral("云端存储");
     auto text = QStringLiteral("中转服务 · ") + kind + (ready ? QStringLiteral(" · 已打开") : QStringLiteral(" · 已锁定")) +
-        (serving ? QStringLiteral(" · 服务运行中") : busy ? QStringLiteral(" · 正在处理") : QString()) + QStringLiteral(" · ") + qs(s.status);
+        (serving ? QStringLiteral(" · 服务已启用") : busy ? QStringLiteral(" · 正在处理") : QString()) + QStringLiteral(" · ") + qs(s.status);
     if (text != last) { last = text; emit message(text); }
     nameSpace->setText(s.nameSpace.empty() ? (unbound ? QStringLiteral("凭证库编号：尚未绑定") : QStringLiteral("凭证库编号：尚未初始化")) : QStringLiteral("凭证库编号：") + qs(s.nameSpace));
     table->setRowCount(0);
@@ -312,7 +316,7 @@ void SafeEndPanel::serve() {
                               text(QStringLiteral("端口"), settings.value(QStringLiteral("relay/port"), 8443).toString(), 5)};
     ClearFields clear{fields};
     if (!FormDialog::ask(this, QStringLiteral("启动中转服务"),
-            QStringLiteral("服务只接受本机配对过的设备，每次请求均需批准。启动后打开软件会自动启动服务；停止服务可关闭自动启动，锁屏会暂停服务。"),
+            QStringLiteral("服务只接受本机配对过的设备。启动后打开软件会自动服务，锁屏不会停止；连接中断会自动重试。手动停止或退出软件才会停服。注册和登录仍需批准。"),
             fields, [](const QVector<QString> &values) {
                 bool ok = false; auto port = values[1].toUInt(&ok);
                 if (!ok || !port || port > 65535) return QStringLiteral("端口应为 1–65535。");
@@ -327,12 +331,10 @@ void SafeEndPanel::startService(const QString &address, uint16_t port) {
     auto *s = session.get(); auto state = s->snapshot(); auto start = epoch;
     if (s->visibleBusy() || closing || !port || !state.initialized ||
         state.kind == StorageKind::InitializingCloud || state.kind == StorageKind::MovingToCloud) return;
-    bool open = state.unlocked && !redact;
     redact = false;
     auto host = u8(address);
-    serving = s->submit([this, s, open, host, port, start] {
-        if (!open) { s->acquireRemembered(); s->publish("凭证库已打开，正在启动服务…", true); }
-        serveRelay(*s, host, port, approveOnGui, [this, start](uint16_t) {
+    serving = s->submit([this, s, host, port, start] {
+        runService(*s, host, port, approveOnGui, [this, start](uint16_t) {
             // Canceling the unlock prompt must not enable automatic startup.
             QMetaObject::invokeMethod(this, [this, start] {
                 if (start == epoch && !closing && !session->canceled())
